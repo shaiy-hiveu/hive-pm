@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
-import { X, Search, Loader2, Check, ExternalLink } from "lucide-react";
+import { X, Search, Loader2, Check, ExternalLink, SlidersHorizontal, ChevronUp } from "lucide-react";
 import clsx from "clsx";
 
 type NotionTask = {
@@ -61,12 +61,61 @@ export default function NotionTaskPicker({ pillarId, onClose, onDone }: {
   const [productFilter, setProductFilter] = useState<string | null>(null);
   const [sinceDate, setSinceDate] = useState<string>("");
   const [saving, setSaving] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [filtersHydrated, setFiltersHydrated] = useState(false);
 
   useEffect(() => {
     fetch("/api/notion/tasks")
       .then(r => r.json())
       .then(d => { setTasks(d.tasks ?? []); setLoading(false); });
   }, []);
+
+  // Load saved filters for this pillar
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(`notion-filters:${pillarId}`);
+      if (raw) {
+        const f = JSON.parse(raw);
+        setTypeFilter(f.type ?? null);
+        setPriorityFilter(f.priority ?? null);
+        setStatusFilter(f.status ?? null);
+        setProductFilter(f.product ?? null);
+        setSinceDate(f.since ?? "");
+      }
+    } catch {
+      // ignore malformed storage
+    }
+    setFiltersHydrated(true);
+  }, [pillarId]);
+
+  // Persist filters per pillar (only after hydration so we don't overwrite with defaults)
+  useEffect(() => {
+    if (!filtersHydrated) return;
+    const payload = {
+      type: typeFilter, priority: priorityFilter, status: statusFilter,
+      product: productFilter, since: sinceDate,
+    };
+    try {
+      localStorage.setItem(`notion-filters:${pillarId}`, JSON.stringify(payload));
+    } catch {
+      // storage unavailable — skip
+    }
+  }, [filtersHydrated, pillarId, typeFilter, priorityFilter, statusFilter, productFilter, sinceDate]);
+
+  const activeFilters: { label: string; value: string; clear: () => void; style?: string }[] = [];
+  if (typeFilter) activeFilters.push({ label: "Type", value: typeFilter, clear: () => setTypeFilter(null), style: TYPE_STYLE[typeFilter.toLowerCase()] });
+  if (priorityFilter) activeFilters.push({ label: "Priority", value: priorityFilter, clear: () => setPriorityFilter(null), style: PRIORITY_STYLE[priorityFilter.toLowerCase()] });
+  if (productFilter) activeFilters.push({ label: "Product", value: productFilter, clear: () => setProductFilter(null), style: "bg-sky-900/50 text-sky-300 border-sky-700/50" });
+  if (statusFilter) activeFilters.push({ label: "Status", value: statusFilter, clear: () => setStatusFilter(null), style: STATUS_STYLE[statusFilter.toLowerCase()] });
+  if (sinceDate) activeFilters.push({ label: "Since", value: sinceDate, clear: () => setSinceDate("") });
+
+  function clearAllFilters() {
+    setTypeFilter(null);
+    setPriorityFilter(null);
+    setStatusFilter(null);
+    setProductFilter(null);
+    setSinceDate("");
+  }
 
   const types = Array.from(new Set(tasks.map(t => t.type).filter(Boolean))) as string[];
   const statuses = (Array.from(new Set(tasks.map(t => t.status).filter(Boolean))) as string[])
@@ -126,6 +175,40 @@ export default function NotionTaskPicker({ pillarId, onClose, onDone }: {
               placeholder="Search tasks..." autoFocus
               className="w-full bg-gray-800 border border-gray-700 rounded-lg pl-8 pr-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-indigo-500" />
           </div>
+
+          {/* Collapsed summary bar */}
+          {!filtersOpen && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <button onClick={() => setFiltersOpen(true)}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border border-gray-700 text-gray-300 hover:border-gray-500 hover:bg-gray-800 transition-colors">
+                <SlidersHorizontal size={12} />
+                {activeFilters.length > 0 ? `Filters (${activeFilters.length})` : "Filters"}
+              </button>
+              {activeFilters.map(f => (
+                <span key={`${f.label}:${f.value}`}
+                  className={clsx("inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border capitalize",
+                    f.style ?? "border-gray-700 text-gray-400")}>
+                  <span className="text-[10px] opacity-70 normal-case">{f.label}:</span>
+                  {f.value}
+                  <button onClick={f.clear}
+                    className="opacity-60 hover:opacity-100 ml-0.5"
+                    aria-label={`Clear ${f.label}`}>
+                    <X size={10} />
+                  </button>
+                </span>
+              ))}
+              {activeFilters.length > 0 && (
+                <button onClick={clearAllFilters}
+                  className="text-xs text-gray-500 hover:text-gray-300 underline-offset-2 hover:underline">
+                  clear all
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Expanded: full filters */}
+          {filtersOpen && (
+            <>
 
           {/* Type filter */}
           <div className="flex gap-2 flex-wrap items-center">
@@ -214,6 +297,22 @@ export default function NotionTaskPicker({ pillarId, onClose, onDone }: {
               <button onClick={() => setSinceDate("")} className="text-xs text-gray-500 hover:text-gray-300">✕ clear</button>
             )}
           </div>
+
+          {/* Collapse controls */}
+          <div className="flex items-center justify-between pt-1">
+            {activeFilters.length > 0 ? (
+              <button onClick={clearAllFilters}
+                className="text-xs text-gray-500 hover:text-gray-300">
+                clear all
+              </button>
+            ) : <span />}
+            <button onClick={() => setFiltersOpen(false)}
+              className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-200">
+              <ChevronUp size={12} /> Done
+            </button>
+          </div>
+            </>
+          )}
         </div>
 
         {/* Task list */}
