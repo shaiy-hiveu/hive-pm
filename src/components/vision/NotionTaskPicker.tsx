@@ -58,6 +58,7 @@ export default function NotionTaskPicker({ pillarId, onClose, onDone }: {
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [priorityFilter, setPriorityFilter] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
+  const [productFilter, setProductFilter] = useState<string | null>(null);
   const [sinceDate, setSinceDate] = useState<string>("");
   const [saving, setSaving] = useState(false);
 
@@ -72,14 +73,17 @@ export default function NotionTaskPicker({ pillarId, onClose, onDone }: {
     .sort((a, b) => (STATUS_ORDER[a.toLowerCase()] ?? 99) - (STATUS_ORDER[b.toLowerCase()] ?? 99));
   const priorities = Array.from(new Set(tasks.map(t => t.priority).filter(Boolean)) as Set<string>)
     .sort((a, b) => (PRIORITY_ORDER[a.toLowerCase()] ?? 99) - (PRIORITY_ORDER[b.toLowerCase()] ?? 99));
+  const products = (Array.from(new Set(tasks.map(t => t.product).filter(Boolean))) as string[])
+    .sort((a, b) => a.localeCompare(b));
 
   const filtered = tasks.filter(t => {
     const matchSearch = t.name.toLowerCase().includes(search.toLowerCase());
     const matchType = !typeFilter || t.type === typeFilter;
     const matchPriority = !priorityFilter || t.priority === priorityFilter;
     const matchStatus = !statusFilter || t.status === statusFilter;
+    const matchProduct = !productFilter || t.product === productFilter;
     const matchDate = !sinceDate || (t as any).created_at >= sinceDate;
-    return matchSearch && matchType && matchPriority && matchStatus && matchDate;
+    return matchSearch && matchType && matchPriority && matchStatus && matchProduct && matchDate;
   });
 
   function toggle(id: string) {
@@ -155,6 +159,26 @@ export default function NotionTaskPicker({ pillarId, onClose, onDone }: {
                   className={clsx("px-2.5 py-1 rounded-full text-xs border transition-colors capitalize",
                     priorityFilter === p ? "bg-indigo-600 text-white border-indigo-500"
                       : (PRIORITY_STYLE[p.toLowerCase()] ?? "border-gray-700 text-gray-400"))}>
+                  {p}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Product filter */}
+          {products.length > 0 && (
+            <div className="flex gap-2 flex-wrap items-center">
+              <span className="text-xs text-gray-600">Product:</span>
+              <button onClick={() => setProductFilter(null)}
+                className={clsx("px-2.5 py-1 rounded-full text-xs border transition-colors",
+                  !productFilter ? "bg-indigo-600 text-white border-indigo-500" : "border-gray-700 text-gray-400 hover:border-gray-500")}>
+                All
+              </button>
+              {products.map(p => (
+                <button key={p} onClick={() => setProductFilter(productFilter === p ? null : p)}
+                  className={clsx("px-2.5 py-1 rounded-full text-xs border transition-colors",
+                    productFilter === p ? "bg-indigo-600 text-white border-indigo-500"
+                      : "bg-sky-900/50 text-sky-300 border-sky-700/50 hover:border-sky-500")}>
                   {p}
                 </button>
               ))}
