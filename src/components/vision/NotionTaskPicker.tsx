@@ -5,7 +5,7 @@ import clsx from "clsx";
 
 type NotionTask = {
   id: string; name: string; type: string | null;
-  status: string | null; product: string | null;
+  status: string | null; priority: string | null; product: string | null;
   sprint: string | null; assignee: string | null; page_url: string;
   created_at?: string;
 };
@@ -18,6 +18,17 @@ const TYPE_STYLE: Record<string, string> = {
   "tech depth": "bg-purple-900/50 text-purple-300 border-purple-700/50",
 };
 
+const PRIORITY_STYLE: Record<string, string> = {
+  urgent: "bg-rose-900/50 text-rose-300 border-rose-700/50",
+  high: "bg-red-900/50 text-red-300 border-red-700/50",
+  medium: "bg-amber-900/50 text-amber-300 border-amber-700/50",
+  low: "bg-sky-900/50 text-sky-300 border-sky-700/50",
+};
+
+const PRIORITY_ORDER: Record<string, number> = {
+  urgent: 0, high: 1, medium: 2, low: 3,
+};
+
 export default function NotionTaskPicker({ pillarId, onClose, onDone }: {
   pillarId: string;
   onClose: () => void;
@@ -28,6 +39,7 @@ export default function NotionTaskPicker({ pillarId, onClose, onDone }: {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
+  const [priorityFilter, setPriorityFilter] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [sinceDate, setSinceDate] = useState<string>("");
   const [saving, setSaving] = useState(false);
@@ -40,13 +52,16 @@ export default function NotionTaskPicker({ pillarId, onClose, onDone }: {
 
   const types = Array.from(new Set(tasks.map(t => t.type).filter(Boolean))) as string[];
   const statuses = Array.from(new Set(tasks.map(t => t.status).filter(Boolean))) as string[];
+  const priorities = Array.from(new Set(tasks.map(t => t.priority).filter(Boolean)) as Set<string>)
+    .sort((a, b) => (PRIORITY_ORDER[a.toLowerCase()] ?? 99) - (PRIORITY_ORDER[b.toLowerCase()] ?? 99));
 
   const filtered = tasks.filter(t => {
     const matchSearch = t.name.toLowerCase().includes(search.toLowerCase());
     const matchType = !typeFilter || t.type === typeFilter;
+    const matchPriority = !priorityFilter || t.priority === priorityFilter;
     const matchStatus = !statusFilter || t.status === statusFilter;
     const matchDate = !sinceDate || (t as any).created_at >= sinceDate;
-    return matchSearch && matchType && matchStatus && matchDate;
+    return matchSearch && matchType && matchPriority && matchStatus && matchDate;
   });
 
   function toggle(id: string) {
@@ -108,6 +123,26 @@ export default function NotionTaskPicker({ pillarId, onClose, onDone }: {
             ))}
           </div>
 
+          {/* Priority filter */}
+          {priorities.length > 0 && (
+            <div className="flex gap-2 flex-wrap items-center">
+              <span className="text-xs text-gray-600">Priority:</span>
+              <button onClick={() => setPriorityFilter(null)}
+                className={clsx("px-2.5 py-1 rounded-full text-xs border transition-colors",
+                  !priorityFilter ? "bg-indigo-600 text-white border-indigo-500" : "border-gray-700 text-gray-400 hover:border-gray-500")}>
+                All
+              </button>
+              {priorities.map(p => (
+                <button key={p} onClick={() => setPriorityFilter(priorityFilter === p ? null : p)}
+                  className={clsx("px-2.5 py-1 rounded-full text-xs border transition-colors capitalize",
+                    priorityFilter === p ? "bg-indigo-600 text-white border-indigo-500"
+                      : (PRIORITY_STYLE[p.toLowerCase()] ?? "border-gray-700 text-gray-400"))}>
+                  {p}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Status + Date filter */}
           <div className="flex gap-3 items-center flex-wrap">
             <span className="text-xs text-gray-600">Status:</span>
@@ -153,6 +188,12 @@ export default function NotionTaskPicker({ pillarId, onClose, onDone }: {
                       <span className={clsx("text-xs px-1.5 py-0.5 rounded border capitalize",
                         TYPE_STYLE[task.type.toLowerCase()] ?? "border-gray-700 text-gray-400")}>
                         {task.type}
+                      </span>
+                    )}
+                    {task.priority && (
+                      <span className={clsx("text-xs px-1.5 py-0.5 rounded border capitalize",
+                        PRIORITY_STYLE[task.priority.toLowerCase()] ?? "border-gray-700 text-gray-400")}>
+                        {task.priority}
                       </span>
                     )}
                     {task.product && (
