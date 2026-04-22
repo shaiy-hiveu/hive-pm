@@ -44,6 +44,7 @@ const STATUS_STYLE: Record<string, string> = {
   in_progress: "bg-indigo-100 text-indigo-600 border-indigo-200",
   blocked: "bg-red-100 text-red-600 border-red-200",
   done: "bg-emerald-100 text-emerald-600 border-emerald-200",
+  approved: "bg-violet-100 text-violet-600 border-violet-200",
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -51,7 +52,30 @@ const STATUS_LABEL: Record<string, string> = {
   in_progress: "In progress",
   blocked: "Blocked",
   done: "Done",
+  approved: "Approved",
 };
+
+// Completion weight per state used for sprint %
+const COMPLETION: Record<string, number> = {
+  todo: 0,
+  blocked: 0,
+  in_progress: 0.3,
+  done: 0.8,
+  approved: 1.0,
+};
+
+function taskState(task: Task): keyof typeof COMPLETION {
+  if (task.tags?.includes("notion:approved")) return "approved";
+  return task.status;
+}
+
+function taskCompletion(task: Task): number {
+  return COMPLETION[taskState(task)] ?? 0;
+}
+
+function isActiveTask(task: Task): boolean {
+  return taskState(task) !== "approved" && task.status !== "done";
+}
 
 function addDays(d: Date, n: number): Date {
   const r = new Date(d);
@@ -154,6 +178,26 @@ export default function GanttChart({ pillars }: Props) {
 
   const totalWeeks = shownSprints.length * 2;
 
+  // Completion % per sprint (across all pillars' tasks that belong to that sprint)
+  const sprintCompletion = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const s of allSprints) {
+      const tasksInSprint: Task[] = [];
+      for (const p of pillars) {
+        for (const t of p.tasks ?? []) {
+          if (sprintForTask(t, allSprints)?.index === s.index) tasksInSprint.push(t);
+        }
+      }
+      if (tasksInSprint.length === 0) {
+        map.set(s.index, 0);
+      } else {
+        const sum = tasksInSprint.reduce((acc, t) => acc + taskCompletion(t), 0);
+        map.set(s.index, sum / tasksInSprint.length);
+      }
+    }
+    return map;
+  }, [allSprints, pillars]);
+
   function toggleSprint(idx: number) {
     setVisibleSprints(prev => {
       const next = new Set(prev);
@@ -211,6 +255,7 @@ export default function GanttChart({ pillars }: Props) {
         <div className="flex gap-2 flex-wrap">
           {allSprints.map(s => {
             const isOn = visibleSprints.has(s.index);
+            const pct = Math.round((sprintCompletion.get(s.index) ?? 0) * 100);
             return (
               <button key={s.index} onClick={() => toggleSprint(s.index)}
                 className={clsx("inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs border transition-colors",
@@ -218,6 +263,7 @@ export default function GanttChart({ pillars }: Props) {
                        : "bg-white border-gray-200 text-gray-500 hover:border-gray-300")}>
                 <span className="font-medium">Sprint {s.index}</span>
                 <span className="text-[10px] opacity-70">{formatShort(s.start)}–{formatShort(addDays(s.end, -1))}</span>
+                <span className="text-[10px] font-semibold tabular-nums ml-1">{pct}%</span>
               </button>
             );
           })}
@@ -237,12 +283,21 @@ export default function GanttChart({ pillars }: Props) {
             style={{ gridTemplateColumns: `minmax(360px, 1fr) repeat(${totalWeeks}, minmax(48px, 1fr))` }}
           >
             <div className="px-4 py-3">משימה / Pillar</div>
-            {shownSprints.map(s => (
-              <div key={s.index} className="col-span-2 border-l border-gray-200 px-3 py-2 text-center">
-                <div className="text-[11px] text-indigo-600 font-semibold">Sprint {s.index}</div>
-                <div className="text-[10px] text-gray-400">{formatShort(s.start)}–{formatShort(addDays(s.end, -1))}</div>
-              </div>
-            ))}
+            {shownSprints.map(s => {
+              const pct = Math.round((sprintCompletion.get(s.index) ?? 0) * 100);
+              return (
+                <div key={s.index} className="col-span-2 border-l border-gray-200 px-3 py-2 text-center">
+                  <div className="text-[11px] text-indigo-600 font-semibold">Sprint {s.index}</div>
+                  <div className="text-[10px] text-gray-400">{formatShort(s.start)}–{formatShort(addDays(s.end, -1))}</div>
+                  <div className="mt-1.5 flex items-center gap-1.5 justify-center">
+                    <div className="flex-1 h-1 bg-gray-200 rounded-full overflow-hidden max-w-[80px]">
+                      <div className="h-full bg-indigo-500 transition-all" style={{ width: `${pct}%` }} />
+                    </div>
+                    <span className="text-[10px] text-gray-500 tabular-nums">{pct}%</span>
+                  </div>
+                </div>
+              );
+            })}
             {/* Week row */}
             <div className="" />
             {shownSprints.flatMap(s => [1, 2].map(w => (
@@ -257,7 +312,9 @@ export default function GanttChart({ pillars }: Props) {
             <div className="px-6 py-12 text-center text-gray-400">אין פילרים להצגה</div>
           )}
           {pillars.map((pillar, idx) => {
-            const openTasks = (pillar.tasks ?? []).filter(t => t.status !== "done");
+            const allTasks = pillar.tasks ?? [];
+            const activeTasks = allTasks.filter(isActiveTask);
+            const openTasks = allTasks; // show every task; completion shows via bar/label
             const isOpen = expanded.has(pillar.id);
             return (
               <div key={pillar.id} className="border-b border-gray-100 last:border-0">
@@ -268,7 +325,7 @@ export default function GanttChart({ pillars }: Props) {
                     {isOpen ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
                     {pillar.icon && <span className="text-base">{pillar.icon}</span>}
                     <span className="text-sm font-semibold text-gray-800">{pillar.name}</span>
-                    <span className="text-xs text-gray-400">· {openTasks.length} פעילות</span>
+                    <span className="text-xs text-gray-400">· {activeTasks.length}/{allTasks.length}</span>
                     <span className="text-[10px] text-gray-400 font-mono ml-auto">{String(idx + 1).padStart(2, "0")}</span>
                   </div>
                   {/* Empty cells to fill width */}
@@ -303,6 +360,9 @@ function TaskRow({ task, sprints, totalWeeks, pillarColor }: {
   const targetSprint = sprintForTask(task, sprints);
   const created = toDate(task.created_at ?? null);
   const due = toDate(task.due_date ?? null);
+  const state = taskState(task);
+  const completionPct = Math.round(taskCompletion(task) * 100);
+  const isComplete = state === "approved";
 
   // Compute bar span across shown weeks
   let startWeek: number | null = null;
@@ -320,18 +380,20 @@ function TaskRow({ task, sprints, totalWeeks, pillarColor }: {
   };
 
   const barColor = pillarColor && pillarColor.startsWith("#") ? pillarColor : "#6366f1";
-  const tag = task.tags?.[0];
+  const tag = task.tags?.find(t => !t.startsWith("notion:"));
 
   return (
     <div
-      className="grid items-center hover:bg-gray-50 transition-colors cursor-default"
+      className={clsx("grid items-center hover:bg-gray-50 transition-colors cursor-default", isComplete && "opacity-60")}
       style={{ gridTemplateColumns: `minmax(360px, 1fr) repeat(${totalWeeks}, minmax(48px, 1fr))` }}
       onDoubleClick={openInNotion}
       onContextMenu={e => { if (task.notion_url) { e.preventDefault(); openInNotion(); } }}
       title={task.notion_url ? "Double/right click to open in Notion" : undefined}
     >
       <div className="px-4 py-2.5 pl-10 flex items-center gap-2 min-w-0">
-        <span className="text-sm text-gray-700 truncate flex-1">{task.title}</span>
+        <span className={clsx("text-sm truncate flex-1", isComplete ? "text-gray-400 line-through" : "text-gray-700")}>
+          {task.title}
+        </span>
         {tag && (
           <span className="text-[10px] px-1.5 py-0.5 rounded border border-gray-200 text-gray-500 capitalize shrink-0">
             {tag}
@@ -342,9 +404,10 @@ function TaskRow({ task, sprints, totalWeeks, pillarColor }: {
             {task.product}
           </span>
         )}
-        <span className={clsx("text-[10px] px-1.5 py-0.5 rounded border shrink-0", STATUS_STYLE[task.status] ?? STATUS_STYLE.todo)}>
-          {STATUS_LABEL[task.status] ?? task.status}
+        <span className={clsx("text-[10px] px-1.5 py-0.5 rounded border shrink-0", STATUS_STYLE[state] ?? STATUS_STYLE.todo)}>
+          {STATUS_LABEL[state] ?? state}
         </span>
+        <span className="text-[10px] text-gray-500 shrink-0 tabular-nums">{completionPct}%</span>
         {due && (
           <span className="text-[10px] text-gray-500 shrink-0 tabular-nums">
             📅 {formatLong(due)}
@@ -375,13 +438,19 @@ function TaskRow({ task, sprints, totalWeeks, pillarColor }: {
           </div>
           {startWeek !== null && endWeek !== null && (
             <div
-              className="absolute top-1/2 -translate-y-1/2 h-2.5 rounded-full opacity-85"
+              className="absolute top-1/2 -translate-y-1/2 h-2.5 rounded-full overflow-hidden"
               style={{
                 left: `calc(${(startWeek / totalWeeks) * 100}% + 4px)`,
                 width: `calc(${((endWeek - startWeek + 1) / totalWeeks) * 100}% - 8px)`,
-                backgroundColor: barColor,
+                backgroundColor: `${barColor}33`, // 20% opacity track
+                border: `1px solid ${barColor}55`,
               }}
-            />
+            >
+              <div
+                className="h-full transition-all"
+                style={{ width: `${completionPct}%`, backgroundColor: barColor }}
+              />
+            </div>
           )}
         </div>
       </div>

@@ -25,19 +25,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const existingIds = new Set((existing ?? []).map(r => r.notion_page_id));
     const toInsert = selected
       .filter(t => !existingIds.has(t.id))
-      .map(t => ({
-        pillar_id: id,
-        title: t.name,
-        status: mapStatus(t.status),
-        source: "notion" as const,
-        notion_page_id: t.id,
-        notion_url: t.page_url,
-        assignee: t.assignee,
-        sprint_name: t.sprint,
-        tags: t.type ? [t.type] : [],
-        product: t.product ?? null,
-        due_date: t.due_date ?? null,
-      }));
+      .map(t => {
+        const tags: string[] = [];
+        if (t.type) tags.push(t.type);
+        if (t.status && t.status.toLowerCase().includes("approved")) tags.push("notion:approved");
+        return {
+          pillar_id: id,
+          title: t.name,
+          status: mapStatus(t.status),
+          source: "notion" as const,
+          notion_page_id: t.id,
+          notion_url: t.page_url,
+          assignee: t.assignee,
+          sprint_name: t.sprint,
+          tags,
+          product: t.product ?? null,
+          due_date: t.due_date ?? null,
+        };
+      });
 
     if (toInsert.length === 0) {
       return NextResponse.json({ tasks: [], count: 0 });
