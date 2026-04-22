@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Trash2, Plus, Loader2, ExternalLink, Check, RefreshCw } from "lucide-react";
 import InlineEdit from "@/components/ui/InlineEdit";
 import NotionTaskPicker from "@/components/vision/NotionTaskPicker";
@@ -61,6 +61,12 @@ export default function PillarBlock({ pillar, index, onUpdate, onDelete }: {
     const data = await res.json();
     setTasks(data.tasks ?? []);
   }
+
+  // Always fetch fresh tasks when mounted (handles pillar switch + import refresh)
+  useEffect(() => {
+    reloadTasks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pillar.id]);
 
   const done = tasks.filter(t => t.status === "done").length;
   const active = tasks.length - done;
