@@ -1,117 +1,388 @@
 "use client";
-import { Goal, Sprint } from "@/types";
-import { useMemo } from "react";
-import { addDays, differenceInDays, format, startOfDay } from "date-fns";
+import { useEffect, useMemo, useState } from "react";
+import { ChevronRight, ChevronDown, Plus, Minus, ExternalLink } from "lucide-react";
+import clsx from "clsx";
+
+type Task = {
+  id: string;
+  title: string;
+  status: "todo" | "in_progress" | "done" | "blocked";
+  source: "manual" | "notion";
+  notion_url?: string | null;
+  product?: string | null;
+  tags?: string[] | null;
+  due_date?: string | null;
+  created_at?: string | null;
+};
+
+type Pillar = {
+  id: string;
+  name: string;
+  color?: string;
+  icon?: string | null;
+  tasks?: Task[];
+};
+
+type Sprint = {
+  index: number;   // 1-based
+  start: Date;
+  end: Date;       // exclusive
+  weeks: [Date, Date]; // [week1 start, week2 start]
+};
 
 type Props = {
-  goals: (Goal & { pillar?: { name: string; color: string } | null; product?: { name: string } | null })[];
-  sprints: Sprint[];
+  pillars: Pillar[];
 };
 
-const statusColor: Record<string, string> = {
-  not_started: "#374151",
-  in_progress: "#6366f1",
-  done: "#10b981",
-  blocked: "#ef4444",
+const BASE_DATE = new Date(2026, 3, 19); // 19 April 2026 (month is 0-indexed)
+const SPRINT_DAYS = 14;
+const DEFAULT_SPRINT_COUNT = 4;
+const SPRINT_STORAGE_KEY = "gantt:sprintCount";
+
+const STATUS_STYLE: Record<string, string> = {
+  todo: "bg-gray-100 text-gray-600 border-gray-200",
+  in_progress: "bg-indigo-100 text-indigo-600 border-indigo-200",
+  blocked: "bg-red-100 text-red-600 border-red-200",
+  done: "bg-emerald-100 text-emerald-600 border-emerald-200",
 };
 
-export default function GanttChart({ goals, sprints }: Props) {
-  const allItems = useMemo(() => {
-    const g = goals.map((g) => ({ ...g, _type: "goal" as const }));
-    const s = sprints.map((s) => ({ ...s, _type: "sprint" as const, title: s.name, status: s.is_current ? "in_progress" : "not_started" as any, pillar: null, product: null, progress: 0 }));
-    return [...s, ...g];
-  }, [goals, sprints]);
+const STATUS_LABEL: Record<string, string> = {
+  todo: "To-do",
+  in_progress: "In progress",
+  blocked: "Blocked",
+  done: "Done",
+};
 
-  if (allItems.length === 0) {
-    return (
-      <div className="text-center py-16 text-gray-500 border border-gray-800 rounded-xl">
-        No goals or sprints with dates yet. Add them in the Vision page or Supabase.
-      </div>
-    );
+function addDays(d: Date, n: number): Date {
+  const r = new Date(d);
+  r.setDate(r.getDate() + n);
+  return r;
+}
+
+function formatShort(d: Date): string {
+  return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatLong(d: Date): string {
+  return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+}
+
+function toDate(iso: string | null | undefined): Date | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function buildSprints(count: number): Sprint[] {
+  const out: Sprint[] = [];
+  for (let i = 0; i < count; i++) {
+    const start = addDays(BASE_DATE, i * SPRINT_DAYS);
+    const end = addDays(start, SPRINT_DAYS);
+    out.push({
+      index: i + 1,
+      start,
+      end,
+      weeks: [start, addDays(start, 7)],
+    });
+  }
+  return out;
+}
+
+// A task is "in" a sprint if:
+// 1) its due_date (if set) falls on or before the sprint end AND on/after sprint start, OR
+// 2) no due date, but created_at is at least 7 days before sprint start
+function sprintForTask(task: Task, sprints: Sprint[]): Sprint | null {
+  const due = toDate(task.due_date ?? null);
+  const created = toDate(task.created_at ?? null);
+
+  if (due) {
+    // Find earliest sprint whose end covers the due date
+    for (const s of sprints) {
+      if (due <= s.end) return s;
+    }
+    return sprints[sprints.length - 1] ?? null;
+  }
+  if (created) {
+    for (const s of sprints) {
+      if (addDays(created, 7) <= s.start) return s;
+    }
+  }
+  return null;
+}
+
+function weekIndexOf(date: Date, sprints: Sprint[]): number | null {
+  if (sprints.length === 0) return null;
+  const total = sprints.length * 2;
+  const first = sprints[0].start;
+  const last = addDays(sprints[sprints.length - 1].start, SPRINT_DAYS);
+  if (date < first) return 0;
+  if (date >= last) return total - 1;
+  const diffDays = Math.floor((date.getTime() - first.getTime()) / (1000 * 60 * 60 * 24));
+  return Math.min(Math.floor(diffDays / 7), total - 1);
+}
+
+export default function GanttChart({ pillars }: Props) {
+  const [sprintCount, setSprintCount] = useState<number>(DEFAULT_SPRINT_COUNT);
+  const [hydrated, setHydrated] = useState(false);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [visibleSprints, setVisibleSprints] = useState<Set<number>>(new Set());
+
+  // Load sprint count from storage, default to all visible
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(SPRINT_STORAGE_KEY);
+      const n = raw ? Math.max(1, parseInt(raw, 10) || DEFAULT_SPRINT_COUNT) : DEFAULT_SPRINT_COUNT;
+      setSprintCount(n);
+      setVisibleSprints(new Set(Array.from({ length: n }, (_, i) => i + 1)));
+      setExpanded(new Set(pillars.map(p => p.id))); // open all pillars by default
+    } catch {
+      /* noop */
+    }
+    setHydrated(true);
+  }, [pillars]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    try { localStorage.setItem(SPRINT_STORAGE_KEY, String(sprintCount)); } catch { /* noop */ }
+  }, [hydrated, sprintCount]);
+
+  const allSprints = useMemo(() => buildSprints(sprintCount), [sprintCount]);
+  const shownSprints = useMemo(
+    () => allSprints.filter(s => visibleSprints.has(s.index)),
+    [allSprints, visibleSprints]
+  );
+
+  const totalWeeks = shownSprints.length * 2;
+
+  function toggleSprint(idx: number) {
+    setVisibleSprints(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
   }
 
-  const allDates = allItems.flatMap((i) => [new Date(i.start_date!), new Date(i.end_date!)]);
-  const minDate = startOfDay(new Date(Math.min(...allDates.map((d) => d.getTime()))));
-  const maxDate = startOfDay(new Date(Math.max(...allDates.map((d) => d.getTime()))));
-  const totalDays = differenceInDays(maxDate, minDate) + 1;
-
-  // Generate month markers
-  const months: { label: string; left: number; width: number }[] = [];
-  let cur = new Date(minDate);
-  while (cur <= maxDate) {
-    const start = differenceInDays(cur, minDate);
-    const nextMonth = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
-    const end = Math.min(differenceInDays(nextMonth, minDate), totalDays);
-    months.push({
-      label: format(cur, "MMM yyyy"),
-      left: (start / totalDays) * 100,
-      width: ((end - start) / totalDays) * 100,
+  function addSprint() {
+    setSprintCount(c => {
+      const next = c + 1;
+      setVisibleSprints(prev => new Set(prev).add(next));
+      return next;
     });
-    cur = nextMonth;
+  }
+
+  function removeLastSprint() {
+    setSprintCount(c => {
+      if (c <= 1) return c;
+      const next = c - 1;
+      setVisibleSprints(prev => {
+        const v = new Set(prev);
+        v.delete(c);
+        return v;
+      });
+      return next;
+    });
+  }
+
+  function toggleExpand(pillarId: string) {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      next.has(pillarId) ? next.delete(pillarId) : next.add(pillarId);
+      return next;
+    });
   }
 
   return (
-    <div className="rounded-xl border border-gray-800 bg-gray-900 overflow-x-auto">
-      <div className="min-w-[700px]">
-        {/* Month header */}
-        <div className="relative h-8 border-b border-gray-800 bg-gray-950">
-          {months.map((m) => (
-            <div
-              key={m.label}
-              className="absolute top-0 h-full flex items-center px-2 text-xs text-gray-500 border-r border-gray-800"
-              style={{ left: `${m.left}%`, width: `${m.width}%` }}
-            >
-              {m.label}
-            </div>
-          ))}
+    <div className="space-y-4">
+      {/* Sprint selector */}
+      <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm">
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-xs text-gray-500">ספרינטים — לחץ/י לשינוי הנוכחי</p>
+          <div className="flex items-center gap-1">
+            <button onClick={removeLastSprint} disabled={sprintCount <= 1}
+              className="p-1.5 rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40">
+              <Minus size={13} />
+            </button>
+            <button onClick={addSprint}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 text-xs">
+              <Plus size={13} /> ספרינט
+            </button>
+          </div>
         </div>
-
-        {/* Rows */}
-        <div className="divide-y divide-gray-800">
-          {allItems.map((item) => {
-            const start = differenceInDays(new Date(item.start_date!), minDate);
-            const duration = differenceInDays(new Date(item.end_date!), new Date(item.start_date!)) + 1;
-            const left = (start / totalDays) * 100;
-            const width = Math.max((duration / totalDays) * 100, 0.5);
-            const color = item._type === "sprint"
-              ? "#f59e0b"
-              : item.pillar?.color ?? statusColor[item.status] ?? "#6366f1";
-
+        <div className="flex gap-2 flex-wrap">
+          {allSprints.map(s => {
+            const isOn = visibleSprints.has(s.index);
             return (
-              <div key={item.id} className="flex items-center h-12 px-4 gap-3 hover:bg-gray-800/50 group">
-                {/* Label */}
-                <div className="w-44 shrink-0 text-sm truncate">
-                  <span className={item._type === "sprint" ? "text-amber-300 font-medium" : "text-gray-300"}>
-                    {item.title}
-                  </span>
-                  {item._type === "goal" && item.pillar && (
-                    <div className="text-xs text-gray-500 truncate">{item.pillar.name}</div>
-                  )}
-                </div>
+              <button key={s.index} onClick={() => toggleSprint(s.index)}
+                className={clsx("inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs border transition-colors",
+                  isOn ? "bg-indigo-50 border-indigo-200 text-indigo-700"
+                       : "bg-white border-gray-200 text-gray-500 hover:border-gray-300")}>
+                <span className="font-medium">Sprint {s.index}</span>
+                <span className="text-[10px] opacity-70">{formatShort(s.start)}–{formatShort(addDays(s.end, -1))}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
-                {/* Bar */}
-                <div className="flex-1 relative h-6">
-                  <div
-                    className="absolute h-full rounded-md flex items-center px-2 text-xs text-white/80 truncate"
-                    style={{
-                      left: `${left}%`,
-                      width: `${width}%`,
-                      backgroundColor: color,
-                      opacity: item._type === "sprint" ? 0.5 : 0.85,
-                    }}
-                    title={`${format(new Date(item.start_date!), "MMM d")} → ${format(new Date(item.end_date!), "MMM d")}`}
-                  >
-                    {width > 5 && item.title}
+      {/* Chart */}
+      {shownSprints.length === 0 ? (
+        <div className="bg-white border border-dashed border-gray-200 rounded-2xl p-12 text-center text-gray-400">
+          בחר/י לפחות ספרינט אחד כדי לראות את הגאנט
+        </div>
+      ) : (
+        <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
+          {/* Grid header */}
+          <div
+            className="grid border-b border-gray-200 bg-gray-50 text-xs font-semibold text-gray-500"
+            style={{ gridTemplateColumns: `minmax(360px, 1fr) repeat(${totalWeeks}, minmax(48px, 1fr))` }}
+          >
+            <div className="px-4 py-3">משימה / Pillar</div>
+            {shownSprints.map(s => (
+              <div key={s.index} className="col-span-2 border-l border-gray-200 px-3 py-2 text-center">
+                <div className="text-[11px] text-indigo-600 font-semibold">Sprint {s.index}</div>
+                <div className="text-[10px] text-gray-400">{formatShort(s.start)}–{formatShort(addDays(s.end, -1))}</div>
+              </div>
+            ))}
+            {/* Week row */}
+            <div className="" />
+            {shownSprints.flatMap(s => [1, 2].map(w => (
+              <div key={`${s.index}-${w}`} className="border-l border-gray-100 text-center text-[10px] text-gray-400 py-1">
+                W{(s.index - 1) * 2 + w}
+              </div>
+            )))}
+          </div>
+
+          {/* Pillar rows */}
+          {pillars.length === 0 && (
+            <div className="px-6 py-12 text-center text-gray-400">אין פילרים להצגה</div>
+          )}
+          {pillars.map((pillar, idx) => {
+            const openTasks = (pillar.tasks ?? []).filter(t => t.status !== "done");
+            const isOpen = expanded.has(pillar.id);
+            return (
+              <div key={pillar.id} className="border-b border-gray-100 last:border-0">
+                <button onClick={() => toggleExpand(pillar.id)}
+                  className="w-full grid items-center hover:bg-gray-50 transition-colors"
+                  style={{ gridTemplateColumns: `minmax(360px, 1fr) repeat(${totalWeeks}, minmax(48px, 1fr))` }}>
+                  <div className="px-4 py-3 flex items-center gap-2">
+                    {isOpen ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
+                    {pillar.icon && <span className="text-base">{pillar.icon}</span>}
+                    <span className="text-sm font-semibold text-gray-800">{pillar.name}</span>
+                    <span className="text-xs text-gray-400">· {openTasks.length} פעילות</span>
+                    <span className="text-[10px] text-gray-400 font-mono ml-auto">{String(idx + 1).padStart(2, "0")}</span>
                   </div>
-                </div>
+                  {/* Empty cells to fill width */}
+                  {Array.from({ length: totalWeeks }).map((_, i) => (
+                    <div key={i} className="border-l border-gray-100 h-full" />
+                  ))}
+                </button>
 
-                {/* Dates */}
-                <div className="text-xs text-gray-600 w-28 text-right shrink-0">
-                  {format(new Date(item.start_date!), "MMM d")} → {format(new Date(item.end_date!), "MMM d")}
-                </div>
+                {isOpen && openTasks.length > 0 && (
+                  <div>
+                    {openTasks.map(task => <TaskRow key={task.id} task={task} sprints={shownSprints} totalWeeks={totalWeeks} pillarColor={pillar.color} />)}
+                  </div>
+                )}
+                {isOpen && openTasks.length === 0 && (
+                  <div className="px-12 py-3 text-xs text-gray-400">אין משימות פעילות בפילר זה</div>
+                )}
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TaskRow({ task, sprints, totalWeeks, pillarColor }: {
+  task: Task;
+  sprints: Sprint[];
+  totalWeeks: number;
+  pillarColor?: string;
+}) {
+  const targetSprint = sprintForTask(task, sprints);
+  const created = toDate(task.created_at ?? null);
+  const due = toDate(task.due_date ?? null);
+
+  // Compute bar span across shown weeks
+  let startWeek: number | null = null;
+  let endWeek: number | null = null;
+  if (targetSprint) {
+    const barStart = created && created >= sprints[0].start ? created : sprints[0].start;
+    const barEnd = due ?? addDays(targetSprint.end, -1);
+    startWeek = weekIndexOf(barStart, sprints);
+    endWeek = weekIndexOf(barEnd, sprints);
+    if (startWeek !== null && endWeek !== null && endWeek < startWeek) endWeek = startWeek;
+  }
+
+  const openInNotion = () => {
+    if (task.notion_url) window.open(task.notion_url, "_blank", "noopener,noreferrer");
+  };
+
+  const barColor = pillarColor && pillarColor.startsWith("#") ? pillarColor : "#6366f1";
+  const tag = task.tags?.[0];
+
+  return (
+    <div
+      className="grid items-center hover:bg-gray-50 transition-colors cursor-default"
+      style={{ gridTemplateColumns: `minmax(360px, 1fr) repeat(${totalWeeks}, minmax(48px, 1fr))` }}
+      onDoubleClick={openInNotion}
+      onContextMenu={e => { if (task.notion_url) { e.preventDefault(); openInNotion(); } }}
+      title={task.notion_url ? "Double/right click to open in Notion" : undefined}
+    >
+      <div className="px-4 py-2.5 pl-10 flex items-center gap-2 min-w-0">
+        <span className="text-sm text-gray-700 truncate flex-1">{task.title}</span>
+        {tag && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded border border-gray-200 text-gray-500 capitalize shrink-0">
+            {tag}
+          </span>
+        )}
+        {task.product && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200 shrink-0">
+            {task.product}
+          </span>
+        )}
+        <span className={clsx("text-[10px] px-1.5 py-0.5 rounded border shrink-0", STATUS_STYLE[task.status] ?? STATUS_STYLE.todo)}>
+          {STATUS_LABEL[task.status] ?? task.status}
+        </span>
+        {due && (
+          <span className="text-[10px] text-gray-500 shrink-0 tabular-nums">
+            📅 {formatLong(due)}
+          </span>
+        )}
+        {task.notion_url && (
+          <a href={task.notion_url} target="_blank" rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()}
+            className="text-gray-300 hover:text-gray-600 shrink-0">
+            <ExternalLink size={11} />
+          </a>
+        )}
+      </div>
+
+      {/* Week cells with bar */}
+      <div
+        className="col-span-full row-start-1"
+        style={{ gridColumn: `2 / span ${totalWeeks}` }}
+      >
+        <div className="relative h-full">
+          <div className="absolute inset-0 grid" style={{ gridTemplateColumns: `repeat(${totalWeeks}, minmax(0, 1fr))` }}>
+            {Array.from({ length: totalWeeks }).map((_, i) => {
+              const inSprint = targetSprint && (i === weekIndexOf(targetSprint.start, sprints));
+              return (
+                <div key={i} className={clsx("border-l border-gray-100", inSprint ? "bg-indigo-50/40" : "")} />
+              );
+            })}
+          </div>
+          {startWeek !== null && endWeek !== null && (
+            <div
+              className="absolute top-1/2 -translate-y-1/2 h-2.5 rounded-full opacity-85"
+              style={{
+                left: `calc(${(startWeek / totalWeeks) * 100}% + 4px)`,
+                width: `calc(${((endWeek - startWeek + 1) / totalWeeks) * 100}% - 8px)`,
+                backgroundColor: barColor,
+              }}
+            />
+          )}
         </div>
       </div>
     </div>

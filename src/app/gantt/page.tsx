@@ -1,28 +1,22 @@
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin } from "@/lib/supabase";
 import GanttChart from "@/components/gantt/GanttChart";
 
 export const dynamic = "force-dynamic";
 
 export default async function GanttPage() {
-  const { data: goals } = await supabase
-    .from("goals")
-    .select("*, pillar:pillars(name, color), product:products(name)")
-    .not("start_date", "is", null)
-    .not("end_date", "is", null)
-    .order("start_date");
-
-  const { data: sprints } = await supabase
-    .from("sprints")
-    .select("*")
-    .order("start_date");
+  const db = supabaseAdmin();
+  const { data: pillars } = await db
+    .from("pillars")
+    .select(`*, tasks (*)`)
+    .order("order_index");
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6">
+    <div className="max-w-7xl mx-auto space-y-6 px-4">
       <div>
-        <h1 className="text-2xl font-bold text-white">📅 Gantt</h1>
-        <p className="text-gray-400 mt-1">Timeline view of goals and sprints</p>
+        <p className="text-xs font-semibold tracking-widest text-indigo-500 mb-1">HIVE · תכנון ספרינטים</p>
+        <h1 className="text-3xl font-bold text-gray-900">Gantt</h1>
       </div>
-      <GanttChart goals={goals ?? []} sprints={sprints ?? []} />
+      <GanttChart pillars={pillars ?? []} />
     </div>
   );
 }

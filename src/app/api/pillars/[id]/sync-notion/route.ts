@@ -36,6 +36,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         sprint_name: t.sprint,
         tags: t.type ? [t.type] : [],
         product: t.product ?? null,
+        due_date: t.due_date ?? null,
       }));
 
     if (toInsert.length === 0) {
