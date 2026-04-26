@@ -405,7 +405,10 @@ function TaskRow({ task, sprints, totalWeeks, pillarColor }: {
       title={task.notion_url ? "Double/right click to open in Notion" : undefined}
     >
       <div className="px-4 py-2.5 pl-10 flex items-center gap-2 min-w-0">
-        <span className={clsx("text-sm truncate flex-1", isComplete ? "text-gray-400 line-through" : "text-gray-700")}>
+        <span
+          className={clsx("text-sm truncate flex-1", isComplete ? "text-gray-400 line-through" : "text-gray-700")}
+          title={task.title}
+        >
           {task.title}
         </span>
         {tag && (
@@ -459,6 +462,7 @@ function TaskRow({ task, sprints, totalWeeks, pillarColor }: {
                 backgroundColor: `${barColor}33`, // 20% opacity track
                 border: `1px solid ${barColor}55`,
               }}
+              title={`${task.title} — ${completionPct}%${due ? ` · due ${formatLong(due)}` : ""}`}
             >
               <div
                 className="h-full transition-all"
