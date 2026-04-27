@@ -69,25 +69,36 @@ export async function fetchNotionTasks(filter?: {
 
   return results
     .filter((page: any) => page.object === "page")
-    .map((page: any) => {
-      const props = page.properties;
-      return {
-        id: page.id,
-        page_url: page.url,
-        notion_id: extractNumber(props["ID"]),
-        name: extractText(props["Name"]),
-        status: extractSelect(props["Status"]),
-        priority: extractSelect(props["Priority"]),
-        product: extractMultiSelect(props["product"])?.[0] ?? extractSelect(props["product"]) ?? null,
-        area: extractSelect(props["Area"]),
-        sprint: extractNumber(props["Sprint"]) ? `Sprint ${extractNumber(props["Sprint"])}` : null,
-        assignee: extractPeople(props["Assigned to"]) ?? extractPeople(props["Assignee"]),
-        due_date: extractDate(props["Due date"]) ?? extractDate(props["Due Date"]) ?? extractDate(props["Due"]),
-        type: extractSelect(props["Bug/Feature"])?.toLowerCase() as NotionTask["type"] ?? extractSelect(props["Type"])?.toLowerCase() as NotionTask["type"] ?? null,
-        tags: extractMultiSelect(props["Tags"]),
-        created_at: (page as any).created_time ?? null,
-      };
-    });
+    .map(mapPageToTask);
+}
+
+export function mapPageToTask(page: any): NotionTask {
+  const props = page.properties;
+  return {
+    id: page.id,
+    page_url: page.url,
+    notion_id: extractNumber(props["ID"]),
+    name: extractText(props["Name"]),
+    status: extractSelect(props["Status"]),
+    priority: extractSelect(props["Priority"]),
+    product: extractMultiSelect(props["product"])?.[0] ?? extractSelect(props["product"]) ?? null,
+    area: extractSelect(props["Area"]),
+    sprint: extractNumber(props["Sprint"]) ? `Sprint ${extractNumber(props["Sprint"])}` : null,
+    assignee: extractPeople(props["Assigned to"]) ?? extractPeople(props["Assignee"]),
+    due_date: extractDate(props["Due date"]) ?? extractDate(props["Due Date"]) ?? extractDate(props["Due"]),
+    type: extractSelect(props["Bug/Feature"])?.toLowerCase() as NotionTask["type"] ?? extractSelect(props["Type"])?.toLowerCase() as NotionTask["type"] ?? null,
+    tags: extractMultiSelect(props["Tags"]),
+    created_at: (page as any).created_time ?? null,
+  };
+}
+
+export async function fetchNotionTaskByPageId(pageId: string): Promise<NotionTask | null> {
+  try {
+    const page = await notion.pages.retrieve({ page_id: pageId });
+    return mapPageToTask(page);
+  } catch {
+    return null;
+  }
 }
 
 export async function fetchCurrentSprint(): Promise<string | null> {

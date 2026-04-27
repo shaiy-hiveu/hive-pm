@@ -61,4 +61,5 @@ export type NotionTask = {
   due_date: string | null;
   type: "feature" | "bug" | "task" | null;
   tags: string[];
+  created_at?: string | null;
 };

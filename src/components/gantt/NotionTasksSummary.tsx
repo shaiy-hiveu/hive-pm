@@ -1,6 +1,7 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, ExternalLink, Flame, Rocket, Loader2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { ChevronDown, ChevronRight, ExternalLink, Flame, Rocket, Loader2, Check } from "lucide-react";
 import clsx from "clsx";
 
 type NotionTask = {
@@ -76,12 +77,13 @@ function isProductionTask(t: NotionTask): boolean {
 }
 
 export default function NotionTasksSummary({ pillars }: Props) {
+  const router = useRouter();
   const [tasks, setTasks] = useState<NotionTask[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hotScope, setHotScope] = useState<HotScope>("urgent_high");
 
-  // Build map: notion_page_id -> pillar
-  const pillarByPageId = useMemo(() => {
+  // Local mutable copy of the assignment map so optimistic updates show immediately
+  const initialMap = useMemo(() => {
     const map = new Map<string, Pillar>();
     for (const p of pillars) {
       for (const t of p.tasks ?? []) {
@@ -90,6 +92,31 @@ export default function NotionTasksSummary({ pillars }: Props) {
     }
     return map;
   }, [pillars]);
+  const [pillarByPageId, setPillarByPageId] = useState<Map<string, Pillar>>(initialMap);
+
+  useEffect(() => { setPillarByPageId(initialMap); }, [initialMap]);
+
+  async function assignTask(notionPageId: string, pillarId: string | null): Promise<void> {
+    const prev = pillarByPageId;
+    const next = new Map(prev);
+    if (!pillarId) next.delete(notionPageId);
+    else {
+      const target = pillars.find(p => p.id === pillarId);
+      if (target) next.set(notionPageId, target);
+    }
+    setPillarByPageId(next);
+    try {
+      const res = await fetch("/api/tasks/assign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notion_page_id: notionPageId, pillar_id: pillarId }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      router.refresh();
+    } catch {
+      setPillarByPageId(prev); // rollback
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -123,6 +150,8 @@ export default function NotionTasksSummary({ pillars }: Props) {
         loading={tasks === null}
         error={error}
         pillarByPageId={pillarByPageId}
+        pillars={pillars}
+        onAssign={assignTask}
         toolbar={
           <div className="flex items-center gap-1 bg-gray-100 rounded-md p-0.5"
             onClick={e => e.stopPropagation()}>
@@ -148,12 +177,14 @@ export default function NotionTasksSummary({ pillars }: Props) {
         loading={tasks === null}
         error={error}
         pillarByPageId={pillarByPageId}
+        pillars={pillars}
+        onAssign={assignTask}
       />
     </div>
   );
 }
 
-function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPageId, toolbar }: {
+function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPageId, pillars, onAssign, toolbar }: {
   title: string;
   subtitle: string;
   icon: React.ReactNode;
@@ -161,6 +192,8 @@ function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPag
   loading: boolean;
   error: string | null;
   pillarByPageId: Map<string, Pillar>;
+  pillars: Pillar[];
+  onAssign: (notionPageId: string, pillarId: string | null) => Promise<void>;
   toolbar?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -196,7 +229,6 @@ function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPag
           )}
           {!error && tasks.map(task => {
             const pillar = task.id ? pillarByPageId.get(task.id) : undefined;
-            const pillarHex = pillar?.color && pillar.color.startsWith("#") ? pillar.color : "#9ca3af";
             const openNotion = () => window.open(task.page_url, "_blank", "noopener,noreferrer");
             return (
               <div key={task.id}
@@ -226,16 +258,11 @@ function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPag
                       {task.product}
                     </span>
                   )}
-                  {pillar ? (
-                    <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border border-gray-200 text-gray-600">
-                      <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: pillarHex }} />
-                      {pillar.name}
-                    </span>
-                  ) : (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded border border-dashed border-gray-300 text-gray-400">
-                      Unassigned
-                    </span>
-                  )}
+                  <PillarMenu
+                    current={pillar}
+                    pillars={pillars}
+                    onPick={pid => onAssign(task.id, pid)}
+                  />
                   <a href={task.page_url} target="_blank" rel="noopener noreferrer"
                     onClick={e => e.stopPropagation()}
                     className="text-gray-300 hover:text-gray-600">
@@ -245,6 +272,70 @@ function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPag
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PillarMenu({ current, pillars, onPick }: {
+  current: Pillar | undefined;
+  pillars: Pillar[];
+  onPick: (pillarId: string | null) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const hex = current?.color && current.color.startsWith("#") ? current.color : "#9ca3af";
+
+  useEffect(() => {
+    if (!open) return;
+    function handler(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  async function pick(pid: string | null) {
+    setBusy(true);
+    try { await onPick(pid); } finally { setBusy(false); setOpen(false); }
+  }
+
+  return (
+    <div className="relative" ref={ref} onClick={e => e.stopPropagation()}>
+      <button onClick={() => setOpen(o => !o)}
+        className={clsx("inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border transition-colors",
+          current ? "border-gray-200 text-gray-600 hover:border-gray-400"
+                  : "border-dashed border-gray-300 text-gray-400 hover:text-gray-600 hover:border-gray-400")}>
+        {current ? (
+          <>
+            <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: hex }} />
+            {current.name}
+          </>
+        ) : "Unassigned"}
+        {busy ? <Loader2 size={10} className="animate-spin" /> : <ChevronDown size={10} className="opacity-60" />}
+      </button>
+      {open && (
+        <div className="absolute z-20 right-0 mt-1 w-48 bg-white border border-gray-200 rounded-lg shadow-lg py-1">
+          {pillars.map(p => {
+            const phex = p.color && p.color.startsWith("#") ? p.color : "#9ca3af";
+            const isCurrent = current?.id === p.id;
+            return (
+              <button key={p.id} onClick={() => pick(p.id)}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 text-right">
+                <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: phex }} />
+                <span className="flex-1 truncate">{p.name}</span>
+                {isCurrent && <Check size={12} className="text-indigo-500" />}
+              </button>
+            );
+          })}
+          <div className="my-1 border-t border-gray-100" />
+          <button onClick={() => pick(null)}
+            className="w-full px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50 text-right disabled:opacity-50"
+            disabled={!current}>
+            ביטול שיוך
+          </button>
         </div>
       )}
     </div>
