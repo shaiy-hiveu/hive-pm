@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import GanttChart from "@/components/gantt/GanttChart";
+import NotionTasksSummary from "@/components/gantt/NotionTasksSummary";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,7 @@ export default async function GanttPage() {
         <h1 className="text-3xl font-bold text-gray-900">Gantt</h1>
       </div>
       <GanttChart pillars={pillars ?? []} />
+      <NotionTasksSummary pillars={pillars ?? []} />
     </div>
   );
 }
