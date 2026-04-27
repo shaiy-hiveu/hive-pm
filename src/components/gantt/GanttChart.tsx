@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronRight, ChevronDown, ChevronsUpDown, ChevronsDownUp, Plus, Minus, ExternalLink } from "lucide-react";
 import clsx from "clsx";
 
@@ -38,6 +38,10 @@ const BASE_DATE = new Date(2026, 3, 19); // 19 April 2026 (month is 0-indexed)
 const SPRINT_DAYS = 14;
 const DEFAULT_SPRINT_COUNT = 4;
 const SPRINT_STORAGE_KEY = "gantt:sprintCount";
+const LABEL_WIDTH_KEY = "gantt:labelWidth";
+const LABEL_WIDTH_DEFAULT = 360;
+const LABEL_WIDTH_MIN = 220;
+const LABEL_WIDTH_MAX = 720;
 
 const STATUS_STYLE: Record<string, string> = {
   todo: "bg-gray-100 text-gray-600 border-gray-200",
@@ -150,6 +154,7 @@ export default function GanttChart({ pillars }: Props) {
   const [hydrated, setHydrated] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [visibleSprints, setVisibleSprints] = useState<Set<number>>(new Set());
+  const [labelWidth, setLabelWidth] = useState<number>(LABEL_WIDTH_DEFAULT);
 
   // Load sprint count from storage, default to all visible
   useEffect(() => {
@@ -159,6 +164,13 @@ export default function GanttChart({ pillars }: Props) {
       setSprintCount(n);
       setVisibleSprints(new Set(Array.from({ length: n }, (_, i) => i + 1)));
       setExpanded(new Set(pillars.map(p => p.id))); // open all pillars by default
+      const wRaw = localStorage.getItem(LABEL_WIDTH_KEY);
+      if (wRaw) {
+        const w = parseInt(wRaw, 10);
+        if (Number.isFinite(w)) {
+          setLabelWidth(Math.min(LABEL_WIDTH_MAX, Math.max(LABEL_WIDTH_MIN, w)));
+        }
+      }
     } catch {
       /* noop */
     }
@@ -169,6 +181,34 @@ export default function GanttChart({ pillars }: Props) {
     if (!hydrated) return;
     try { localStorage.setItem(SPRINT_STORAGE_KEY, String(sprintCount)); } catch { /* noop */ }
   }, [hydrated, sprintCount]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    try { localStorage.setItem(LABEL_WIDTH_KEY, String(labelWidth)); } catch { /* noop */ }
+  }, [hydrated, labelWidth]);
+
+  const dragRef = useRef<{ startX: number; startW: number } | null>(null);
+
+  function startDrag(e: React.MouseEvent) {
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startW: labelWidth };
+    const onMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return;
+      const next = dragRef.current.startW + (ev.clientX - dragRef.current.startX);
+      setLabelWidth(Math.min(LABEL_WIDTH_MAX, Math.max(LABEL_WIDTH_MIN, next)));
+    };
+    const onUp = () => {
+      dragRef.current = null;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }
 
   const allSprints = useMemo(() => buildSprints(sprintCount), [sprintCount]);
   const shownSprints = useMemo(
@@ -299,9 +339,17 @@ export default function GanttChart({ pillars }: Props) {
           {/* Grid header */}
           <div
             className="grid border-b border-gray-200 bg-gray-50 text-xs font-semibold text-gray-500"
-            style={{ gridTemplateColumns: `minmax(360px, 1fr) repeat(${totalWeeks}, minmax(48px, 1fr))` }}
+            style={{ gridTemplateColumns: `${labelWidth}px repeat(${totalWeeks}, minmax(48px, 1fr))` }}
           >
-            <div className="px-4 py-3">משימה / Pillar</div>
+            <div className="px-4 py-3 relative">
+              משימה / Pillar
+              <div
+                onMouseDown={startDrag}
+                onDoubleClick={() => setLabelWidth(LABEL_WIDTH_DEFAULT)}
+                title="גרור כדי לשנות רוחב · דאבל-קליק לאיפוס"
+                className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-indigo-200 active:bg-indigo-400 transition-colors"
+              />
+            </div>
             {shownSprints.map(s => {
               const pct = Math.round((sprintCompletion.get(s.index) ?? 0) * 100);
               return (
@@ -343,7 +391,7 @@ export default function GanttChart({ pillars }: Props) {
               <div key={pillar.id} className="border-b border-gray-100 last:border-0">
                 <button onClick={() => toggleExpand(pillar.id)}
                   className="w-full grid items-center hover:bg-gray-50 transition-colors"
-                  style={{ gridTemplateColumns: `minmax(360px, 1fr) repeat(${totalWeeks}, minmax(48px, 1fr))` }}>
+                  style={{ gridTemplateColumns: `${labelWidth}px repeat(${totalWeeks}, minmax(48px, 1fr))` }}>
                   <div className="px-4 py-3 flex items-center gap-2">
                     {isOpen ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
                     <span
@@ -369,7 +417,7 @@ export default function GanttChart({ pillars }: Props) {
 
                 {isOpen && openTasks.length > 0 && (
                   <div>
-                    {openTasks.map(task => <TaskRow key={task.id} task={task} sprints={shownSprints} totalWeeks={totalWeeks} pillarColor={pillar.color} />)}
+                    {openTasks.map(task => <TaskRow key={task.id} task={task} sprints={shownSprints} totalWeeks={totalWeeks} labelWidth={labelWidth} pillarColor={pillar.color} />)}
                   </div>
                 )}
                 {isOpen && openTasks.length === 0 && (
@@ -384,10 +432,11 @@ export default function GanttChart({ pillars }: Props) {
   );
 }
 
-function TaskRow({ task, sprints, totalWeeks, pillarColor }: {
+function TaskRow({ task, sprints, totalWeeks, labelWidth, pillarColor }: {
   task: Task;
   sprints: Sprint[];
   totalWeeks: number;
+  labelWidth: number;
   pillarColor?: string;
 }) {
   const targetSprint = sprintForTask(task, sprints);
@@ -418,7 +467,7 @@ function TaskRow({ task, sprints, totalWeeks, pillarColor }: {
   return (
     <div
       className={clsx("grid items-center hover:bg-gray-50 transition-colors cursor-default", isComplete && "opacity-60")}
-      style={{ gridTemplateColumns: `minmax(360px, 1fr) repeat(${totalWeeks}, minmax(48px, 1fr))` }}
+      style={{ gridTemplateColumns: `${labelWidth}px repeat(${totalWeeks}, minmax(48px, 1fr))` }}
       onDoubleClick={openInNotion}
       onContextMenu={e => { if (task.notion_url) { e.preventDefault(); openInNotion(); } }}
       title={task.notion_url ? "Double/right click to open in Notion" : undefined}
