@@ -9,9 +9,30 @@ type Task = {
   id: string; title: string;
   status: "todo" | "in_progress" | "done" | "blocked";
   source: "manual" | "notion"; notion_url?: string;
+  notion_page_id?: string | null;
   assignee?: string; sprint_name?: string; tags?: string[];
   product?: string | null;
 };
+
+// Module-level cache so multiple pillars share one Notion lookup
+let notionIdCache: { map: Record<string, number>; at: number } | null = null;
+const ID_CACHE_TTL_MS = 60_000;
+
+async function loadNotionIdMap(): Promise<Record<string, number>> {
+  if (notionIdCache && Date.now() - notionIdCache.at < ID_CACHE_TTL_MS) {
+    return notionIdCache.map;
+  }
+  try {
+    const res = await fetch("/api/notion/id-map");
+    if (!res.ok) return {};
+    const data = await res.json();
+    const map: Record<string, number> = data.map ?? {};
+    notionIdCache = { map, at: Date.now() };
+    return map;
+  } catch {
+    return {};
+  }
+}
 
 type Pillar = {
   id: string; name: string; color?: string; icon?: string;
@@ -55,6 +76,13 @@ export default function PillarBlock({ pillar, index, onUpdate, onDelete }: {
   const [deleting, setDeleting] = useState(false);
   const [showNotionPicker, setShowNotionPicker] = useState(false);
   const [statusView, setStatusView] = useState<"all" | "active" | "done">("all");
+  const [notionIdMap, setNotionIdMap] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    loadNotionIdMap().then(map => { if (!cancelled) setNotionIdMap(map); });
+    return () => { cancelled = true; };
+  }, []);
 
   async function reloadTasks() {
     const res = await fetch(`/api/pillars/${pillar.id}/tasks`);
@@ -194,6 +222,7 @@ export default function PillarBlock({ pillar, index, onUpdate, onDelete }: {
             const openNotion = () => {
               if (task.notion_url) window.open(task.notion_url, "_blank", "noopener,noreferrer");
             };
+            const notionId = task.notion_page_id ? notionIdMap[task.notion_page_id] : undefined;
             return (
             <div key={task.id} className="flex items-center gap-2 group/task px-3 py-2 rounded-lg hover:bg-gray-50"
               onDoubleClick={openNotion}
@@ -210,6 +239,9 @@ export default function PillarBlock({ pillar, index, onUpdate, onDelete }: {
                 )}>
                 {task.status === "done" && <Check size={11} className="text-white" />}
               </button>
+              {notionId != null && (
+                <span className="text-[10px] font-mono text-gray-400 shrink-0 tabular-nums">#{notionId}</span>
+              )}
               <span className={clsx("flex-1 text-sm", task.status === "done" ? "line-through text-gray-400" : "text-gray-700")}>
                 {task.title}
               </span>
