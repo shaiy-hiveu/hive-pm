@@ -50,12 +50,25 @@ const STATUS_STYLE: Record<string, string> = {
   "approved": "bg-violet-100 text-violet-700 border-violet-200",
 };
 
-function isHotTask(t: NotionTask): boolean {
+type HotScope = "urgent" | "urgent_high";
+
+const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+
+function isActiveStatus(s: string | null): boolean {
+  const v = (s ?? "").toLowerCase();
+  return v === "not started" || v === "in progress" || v === "to-do" || v === "todo";
+}
+
+function isHotTask(t: NotionTask, scope: HotScope): boolean {
   const p = (t.priority ?? "").toLowerCase();
-  const s = (t.status ?? "").toLowerCase();
-  const priorityHit = p === "urgent" || p === "high";
-  const statusHit = s === "not started" || s === "in progress" || s === "to-do" || s === "todo";
-  return priorityHit && statusHit;
+  const priorityHit = scope === "urgent" ? p === "urgent" : p === "urgent" || p === "high";
+  return priorityHit && isActiveStatus(t.status);
+}
+
+function sortByPriority(a: NotionTask, b: NotionTask): number {
+  const pa = PRIORITY_ORDER[(a.priority ?? "").toLowerCase()] ?? 99;
+  const pb = PRIORITY_ORDER[(b.priority ?? "").toLowerCase()] ?? 99;
+  return pa - pb;
 }
 
 function isProductionTask(t: NotionTask): boolean {
@@ -65,6 +78,7 @@ function isProductionTask(t: NotionTask): boolean {
 export default function NotionTasksSummary({ pillars }: Props) {
   const [tasks, setTasks] = useState<NotionTask[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [hotScope, setHotScope] = useState<HotScope>("urgent_high");
 
   // Build map: notion_page_id -> pillar
   const pillarByPageId = useMemo(() => {
@@ -90,19 +104,41 @@ export default function NotionTasksSummary({ pillars }: Props) {
     return () => { cancelled = true; };
   }, []);
 
-  const hot = useMemo(() => (tasks ?? []).filter(isHotTask), [tasks]);
-  const production = useMemo(() => (tasks ?? []).filter(isProductionTask), [tasks]);
+  const hot = useMemo(
+    () => (tasks ?? []).filter(t => isHotTask(t, hotScope)).sort(sortByPriority),
+    [tasks, hotScope]
+  );
+  const production = useMemo(
+    () => (tasks ?? []).filter(isProductionTask).sort(sortByPriority),
+    [tasks]
+  );
 
   return (
     <div className="space-y-4">
       <DigestPanel
         title="משימות חמות"
-        subtitle="High / Urgent · Not Started · In Progress"
+        subtitle={hotScope === "urgent" ? "Urgent · Not Started · In Progress" : "Urgent + High · Not Started · In Progress"}
         icon={<Flame size={16} className="text-rose-500" />}
         tasks={hot}
         loading={tasks === null}
         error={error}
         pillarByPageId={pillarByPageId}
+        toolbar={
+          <div className="flex items-center gap-1 bg-gray-100 rounded-md p-0.5"
+            onClick={e => e.stopPropagation()}>
+            {([
+              { key: "urgent", label: "Urgent" },
+              { key: "urgent_high", label: "Urgent + High" },
+            ] as const).map(opt => (
+              <button key={opt.key}
+                onClick={() => setHotScope(opt.key)}
+                className={clsx("px-2 py-0.5 rounded text-[11px] transition-colors",
+                  hotScope === opt.key ? "bg-white text-gray-800 shadow-sm" : "text-gray-500 hover:text-gray-700")}>
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        }
       />
       <DigestPanel
         title="משימות Production"
@@ -117,7 +153,7 @@ export default function NotionTasksSummary({ pillars }: Props) {
   );
 }
 
-function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPageId }: {
+function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPageId, toolbar }: {
   title: string;
   subtitle: string;
   icon: React.ReactNode;
@@ -125,26 +161,30 @@ function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPag
   loading: boolean;
   error: string | null;
   pillarByPageId: Map<string, Pillar>;
+  toolbar?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
 
   return (
     <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
-      <button onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors text-right">
-        {open ? <ChevronDown size={14} className="text-gray-400 shrink-0" /> : <ChevronRight size={14} className="text-gray-400 shrink-0" />}
-        <span className="shrink-0">{icon}</span>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-gray-900">{title}</span>
-            {!loading && (
-              <span className="text-xs text-gray-400 tabular-nums">· {tasks.length}</span>
-            )}
-            {loading && <Loader2 size={12} className="animate-spin text-gray-400" />}
+      <div className="flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors">
+        <button onClick={() => setOpen(o => !o)}
+          className="flex items-center gap-3 flex-1 min-w-0 text-right">
+          {open ? <ChevronDown size={14} className="text-gray-400 shrink-0" /> : <ChevronRight size={14} className="text-gray-400 shrink-0" />}
+          <span className="shrink-0">{icon}</span>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-gray-900">{title}</span>
+              {!loading && (
+                <span className="text-xs text-gray-400 tabular-nums">· {tasks.length}</span>
+              )}
+              {loading && <Loader2 size={12} className="animate-spin text-gray-400" />}
+            </div>
+            <p className="text-[11px] text-gray-400 mt-0.5">{subtitle}</p>
           </div>
-          <p className="text-[11px] text-gray-400 mt-0.5">{subtitle}</p>
-        </div>
-      </button>
+        </button>
+        {toolbar && <div className="shrink-0">{toolbar}</div>}
+      </div>
 
       {open && (
         <div className="border-t border-gray-100">
