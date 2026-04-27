@@ -394,8 +394,7 @@ function TaskRow({ task, sprints, totalWeeks, pillarColor }: {
   };
 
   const barColor = pillarColor && pillarColor.startsWith("#") ? pillarColor : "#6366f1";
-  const tag = task.tags?.find(t => !t.includes(":"));
-  const notionId = task.tags?.find(t => t.startsWith("notion-id:"))?.slice("notion-id:".length);
+  const tag = task.tags?.find(t => !t.startsWith("notion:"));
 
   return (
     <div
@@ -406,9 +405,6 @@ function TaskRow({ task, sprints, totalWeeks, pillarColor }: {
       title={task.notion_url ? "Double/right click to open in Notion" : undefined}
     >
       <div className="px-4 py-2.5 pl-10 flex items-center gap-2 min-w-0">
-        {notionId && (
-          <span className="text-[10px] font-mono text-gray-400 shrink-0 tabular-nums">#{notionId}</span>
-        )}
         <span
           className={clsx("text-sm truncate flex-1", isComplete ? "text-gray-400 line-through" : "text-gray-700")}
           title={task.title}
