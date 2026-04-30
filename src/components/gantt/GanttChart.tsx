@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { ChevronRight, ChevronDown, ChevronsUpDown, ChevronsDownUp, Plus, Minus, ExternalLink, Check, Loader2 } from "lucide-react";
 import clsx from "clsx";
 import { loadNotionMetaMap } from "@/lib/notion-id-map";
+import PillarMenu from "@/components/PillarMenu";
 import { explicitSprintIndex, currentSprintIndex, isSprintCleared } from "@/lib/sprints";
 
 type Task = {
@@ -179,6 +180,20 @@ export default function GanttChart({ pillars }: Props) {
     } catch { /* ignore */ }
   }
 
+  // For Others-pillar synthetic rows: assign by notion_page_id (creates a
+  // DB row pointing at the chosen pillar) — same flow as the digest panel.
+  async function assignOthersTask(notionPageId: string, pillarId: string | null): Promise<void> {
+    try {
+      await fetch("/api/tasks/assign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notion_page_id: notionPageId, pillar_id: pillarId }),
+      });
+      try { localStorage.removeItem("notion:tasks-cache"); } catch { /* noop */ }
+      router.refresh();
+    } catch { /* ignore */ }
+  }
+
   const [clearingSprint, setClearingSprint] = useState<number | null>(null);
   const [clearBusy, setClearBusy] = useState(false);
 
@@ -326,6 +341,7 @@ export default function GanttChart({ pillars }: Props) {
             status: "done",
             source: "notion",
             notion_url: t.page_url,
+            notion_page_id: t.id,
             product: t.product,
             tags,
             due_date: currentSprint.end.toISOString(),
@@ -628,7 +644,7 @@ export default function GanttChart({ pillars }: Props) {
 
                 {isOpen && openTasks.length > 0 && (
                   <div>
-                    {openTasks.map(task => <TaskRow key={task.id} task={task} sprints={shownSprints} allSprintsCount={sprintCount} totalWeeks={totalWeeks} labelWidth={labelWidth} pillarColor={pillar.color} notionIdMap={notionIdMap} onSetSprint={setTaskSprint} isSyntheticOthers={pillar.id === "__others__"} />)}
+                    {openTasks.map(task => <TaskRow key={task.id} task={task} sprints={shownSprints} allSprintsCount={sprintCount} totalWeeks={totalWeeks} labelWidth={labelWidth} pillarColor={pillar.color} notionIdMap={notionIdMap} onSetSprint={setTaskSprint} isSyntheticOthers={pillar.id === "__others__"} realPillars={pillars} onAssignPillar={assignOthersTask} />)}
                   </div>
                 )}
                 {isOpen && openTasks.length === 0 && (
@@ -738,7 +754,7 @@ export default function GanttChart({ pillars }: Props) {
   );
 }
 
-function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pillarColor, notionIdMap, onSetSprint, isSyntheticOthers }: {
+function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pillarColor, notionIdMap, onSetSprint, isSyntheticOthers, realPillars, onAssignPillar }: {
   task: Task;
   sprints: Sprint[];
   allSprintsCount: number;
@@ -748,6 +764,8 @@ function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pilla
   notionIdMap: Record<string, number>;
   onSetSprint: (taskId: string, sprintIdx: number | null) => Promise<void>;
   isSyntheticOthers: boolean;
+  realPillars: Pillar[];
+  onAssignPillar: (notionPageId: string, pillarId: string | null) => Promise<void>;
 }) {
   const notionId = task.notion_page_id ? notionIdMap[task.notion_page_id] : undefined;
   const targetSprint = sprintForTask(task, sprints);
@@ -814,6 +832,14 @@ function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pilla
             current={taskSprintIdx}
             count={allSprintsCount}
             onPick={idx => onSetSprint(task.id, idx)}
+          />
+        )}
+        {isSyntheticOthers && task.notion_page_id && (
+          <PillarMenu
+            current={undefined}
+            pillars={realPillars}
+            onPick={pid => onAssignPillar(task.notion_page_id!, pid)}
+            allowUnassign={false}
           />
         )}
         <span className="text-[10px] text-gray-500 shrink-0 tabular-nums">{completionPct}%</span>
