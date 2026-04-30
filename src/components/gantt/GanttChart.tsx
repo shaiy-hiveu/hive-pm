@@ -570,8 +570,11 @@ export default function GanttChart({ pillars }: Props) {
             const pillarHex = pillar.color && pillar.color.startsWith("#") ? pillar.color : "#6366f1";
             return (
               <div key={pillar.id} className="border-b border-gray-100 last:border-0">
-                <button onClick={() => toggleExpand(pillar.id)}
-                  className="w-full grid items-center hover:bg-gray-50 transition-colors"
+                <div onClick={() => toggleExpand(pillar.id)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleExpand(pillar.id); } }}
+                  className="w-full grid items-center hover:bg-gray-50 transition-colors cursor-pointer"
                   style={{ gridTemplateColumns: `${labelWidth}px repeat(${totalWeeks}, minmax(48px, 1fr))` }}>
                   <div className="px-4 py-3 flex items-center gap-2">
                     {isOpen ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
@@ -583,6 +586,18 @@ export default function GanttChart({ pillars }: Props) {
                     <span className={clsx("text-sm font-semibold", pillar.id === "__others__" ? "text-gray-500 italic" : "text-gray-800")}>
                       {pillar.name}
                     </span>
+                    {pillar.id !== "__others__" && targetSprintIdx != null && (
+                      <button
+                        onClick={e => {
+                          e.stopPropagation();
+                          if (!isOpen) toggleExpand(pillar.id);
+                          if (!addPanelOpen.has(pillar.id)) toggleAddPanel(pillar.id);
+                        }}
+                        title={`הוסף משימה ל-Sprint ${targetSprintIdx}`}
+                        className="inline-flex items-center justify-center w-5 h-5 rounded-full border border-gray-200 text-gray-400 hover:text-indigo-600 hover:border-indigo-400 hover:bg-indigo-50 transition-colors shrink-0">
+                        <Plus size={11} />
+                      </button>
+                    )}
                     {pillar.id === "__others__" && (
                       <span className="text-[10px] text-gray-400">משימות שהושלמו בספרינט הנוכחי וטרם שויכו</span>
                     )}
@@ -599,7 +614,7 @@ export default function GanttChart({ pillars }: Props) {
                   {Array.from({ length: totalWeeks }).map((_, i) => (
                     <div key={i} className="border-l border-gray-100 h-full" />
                   ))}
-                </button>
+                </div>
 
                 {isOpen && openTasks.length > 0 && (
                   <div>
@@ -610,30 +625,36 @@ export default function GanttChart({ pillars }: Props) {
                   <div className="px-12 py-3 text-xs text-gray-400">אין משימות פעילות בפילר זה</div>
                 )}
 
-                {isOpen && pillar.id !== "__others__" && targetSprintIdx != null && (() => {
-                  // Pillar tasks NOT currently visible in the chart — these
-                  // are candidates the user can "pull" into the active sprint.
+                {isOpen && pillar.id !== "__others__" && targetSprintIdx != null && addPanelOpen.has(pillar.id) && (() => {
+                  // Candidate set: every task in this pillar that is NOT
+                  // already shown in the active sprint AND whose state is
+                  // not done/approved. The user picks which to pull in.
                   const original = allPillars.find(p => p.id === pillar.id);
                   const visibleIds = new Set((pillar.tasks ?? []).map(t => t.id));
-                  const hidden = (original?.tasks ?? []).filter(t => !visibleIds.has(t.id));
-                  if (hidden.length === 0) return null;
-                  const panelOpen = addPanelOpen.has(pillar.id);
+                  const candidates = (original?.tasks ?? []).filter(t => {
+                    if (visibleIds.has(t.id)) return false;
+                    const state = taskState(t);
+                    return state !== "done" && state !== "approved";
+                  });
                   return (
                     <div className="border-t border-gray-100 bg-gray-50/50">
-                      <button onClick={() => toggleAddPanel(pillar.id)}
-                        className="w-full flex items-center gap-2 px-12 py-2 text-xs text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50/40 transition-colors">
-                        {panelOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                        <Plus size={12} />
-                        <span>הוסף משימה ל-Sprint {targetSprintIdx}</span>
-                        <span className="text-gray-400">· {hidden.length} זמינות</span>
-                      </button>
-                      {panelOpen && (
-                        <div className="px-12 pb-3 pt-1 space-y-1">
-                          {hidden.map(t => {
+                      <div className="flex items-center justify-between px-12 py-2">
+                        <span className="text-xs text-indigo-700 font-medium">
+                          הוסף ל-Sprint {targetSprintIdx}
+                          <span className="text-gray-400 font-normal"> · {candidates.length} זמינות</span>
+                        </span>
+                        <button onClick={() => toggleAddPanel(pillar.id)}
+                          className="text-xs text-gray-400 hover:text-gray-700">סגור</button>
+                      </div>
+                      {candidates.length === 0 ? (
+                        <p className="px-12 pb-3 text-xs text-gray-400">אין משימות פתוחות נוספות בפילר זה</p>
+                      ) : (
+                        <div className="px-12 pb-3 space-y-1">
+                          {candidates.map(t => {
                             const tNotionId = t.notion_page_id ? notionIdMap[t.notion_page_id] : undefined;
-                            const idx = explicitSprintIndex(t.tags ?? null);
+                            const sIdx = explicitSprintIndex(t.tags ?? null);
                             const isCleared = isSprintCleared(t.tags ?? null);
-                            const where = isCleared ? "Cleared" : (idx ? `Sprint ${idx}` : "—");
+                            const where = isCleared ? "Cleared" : (sIdx ? `Sprint ${sIdx}` : "—");
                             return (
                               <button key={t.id}
                                 onClick={() => setTaskSprint(t.id, targetSprintIdx)}
