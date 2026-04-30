@@ -54,6 +54,29 @@ const STATUS_STYLE: Record<string, string> = {
 
 type HotScope = "urgent" | "urgent_high";
 
+const HOT_SCOPE_KEY = "notionTasks:hotScope";
+const HOT_OPEN_KEY = "notionTasks:hotOpen";
+const PRODUCTION_OPEN_KEY = "notionTasks:productionOpen";
+
+function readBoolFromStorage(key: string, fallback: boolean): boolean {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const v = localStorage.getItem(key);
+    if (v === "true") return true;
+    if (v === "false") return false;
+  } catch { /* noop */ }
+  return fallback;
+}
+
+function readScopeFromStorage(): HotScope {
+  if (typeof window === "undefined") return "urgent_high";
+  try {
+    const v = localStorage.getItem(HOT_SCOPE_KEY);
+    if (v === "urgent" || v === "urgent_high") return v;
+  } catch { /* noop */ }
+  return "urgent_high";
+}
+
 const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
 
 function isActiveStatus(s: string | null): boolean {
@@ -82,6 +105,19 @@ export default function NotionTasksSummary({ pillars }: Props) {
   const [tasks, setTasks] = useState<NotionTask[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hotScope, setHotScope] = useState<HotScope>("urgent_high");
+  const [hydrated, setHydrated] = useState(false);
+
+  // Read prefs on mount (client-only)
+  useEffect(() => {
+    setHotScope(readScopeFromStorage());
+    setHydrated(true);
+  }, []);
+
+  // Persist scope after hydration so the initial default doesn't overwrite the saved value
+  useEffect(() => {
+    if (!hydrated) return;
+    try { localStorage.setItem(HOT_SCOPE_KEY, hotScope); } catch { /* noop */ }
+  }, [hydrated, hotScope]);
 
   // Local mutable copy of the assignment map so optimistic updates show immediately
   const initialMap = useMemo(() => {
@@ -153,6 +189,7 @@ export default function NotionTasksSummary({ pillars }: Props) {
         pillarByPageId={pillarByPageId}
         pillars={pillars}
         onAssign={assignTask}
+        storageKey={HOT_OPEN_KEY}
         toolbar={
           <div className="flex items-center gap-1 bg-gray-100 rounded-md p-0.5"
             onClick={e => e.stopPropagation()}>
@@ -180,12 +217,13 @@ export default function NotionTasksSummary({ pillars }: Props) {
         pillarByPageId={pillarByPageId}
         pillars={pillars}
         onAssign={assignTask}
+        storageKey={PRODUCTION_OPEN_KEY}
       />
     </div>
   );
 }
 
-function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPageId, pillars, onAssign, toolbar }: {
+function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPageId, pillars, onAssign, toolbar, storageKey }: {
   title: string;
   subtitle: string;
   icon: React.ReactNode;
@@ -196,8 +234,20 @@ function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPag
   pillars: Pillar[];
   onAssign: (notionPageId: string, pillarId: string | null) => Promise<void>;
   toolbar?: React.ReactNode;
+  storageKey?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    if (storageKey) setOpen(readBoolFromStorage(storageKey, false));
+    setHydrated(true);
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (!hydrated || !storageKey) return;
+    try { localStorage.setItem(storageKey, String(open)); } catch { /* noop */ }
+  }, [hydrated, storageKey, open]);
 
   return (
     <div className="bg-white border border-gray-200 rounded-2xl shadow-sm">
