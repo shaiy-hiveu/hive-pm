@@ -1,10 +1,15 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import GanttChart from "@/components/gantt/GanttChart";
 import NotionTasksSummary from "@/components/gantt/NotionTasksSummary";
+import { syncNotionStatus } from "@/lib/sync-notion-status";
 
 export const dynamic = "force-dynamic";
 
 export default async function GanttPage() {
+  // Refresh status / approved-tag / due_date from Notion before rendering
+  // so the chart reflects the latest reality, not a stale import snapshot.
+  try { await syncNotionStatus(); } catch { /* render with whatever's in DB */ }
+
   const db = supabaseAdmin();
   const { data: pillars } = await db
     .from("pillars")

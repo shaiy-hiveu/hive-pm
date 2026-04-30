@@ -102,8 +102,15 @@ export default function VisionPage() {
     "Become a core intelligence infrastructure for campaigns — a unified, AI-driven platform that replaces fragmented campaign research with a single operating system."
   );
 
-  async function load() {
+  async function load(syncFirst = false) {
     setLoading(true);
+    if (syncFirst) {
+      // Pull fresh statuses from Notion before showing the page so what the
+      // user sees matches what's currently in Notion.
+      try {
+        await fetch("/api/sync-from-notion", { method: "POST" });
+      } catch { /* render with whatever's in DB */ }
+    }
     const res = await fetch("/api/pillars");
     const data = await res.json();
     const list: Pillar[] = data.pillars ?? [];
@@ -112,7 +119,7 @@ export default function VisionPage() {
     setLoading(false);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(true); }, []);
 
   async function addPillar() {
     setAdding(true);
