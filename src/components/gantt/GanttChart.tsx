@@ -428,6 +428,24 @@ export default function GanttChart({ pillars }: Props) {
     });
   }
 
+  // Sprint to which "Add task" pulls in hidden tasks. Prefer the current
+  // sprint when it's visible, otherwise the lowest-index visible sprint.
+  const targetSprintIdx = useMemo<number | null>(() => {
+    if (visibleSprints.size === 0) return null;
+    const currentIdx = currentSprintIndex(allSprints.length);
+    if (visibleSprints.has(currentIdx)) return currentIdx;
+    return Math.min(...Array.from(visibleSprints));
+  }, [visibleSprints, allSprints.length]);
+
+  const [addPanelOpen, setAddPanelOpen] = useState<Set<string>>(new Set());
+  function toggleAddPanel(pillarId: string) {
+    setAddPanelOpen(prev => {
+      const next = new Set(prev);
+      next.has(pillarId) ? next.delete(pillarId) : next.add(pillarId);
+      return next;
+    });
+  }
+
   return (
     <div className="space-y-4">
       {/* Sprint selector */}
@@ -591,6 +609,49 @@ export default function GanttChart({ pillars }: Props) {
                 {isOpen && openTasks.length === 0 && (
                   <div className="px-12 py-3 text-xs text-gray-400">אין משימות פעילות בפילר זה</div>
                 )}
+
+                {isOpen && pillar.id !== "__others__" && targetSprintIdx != null && (() => {
+                  // Pillar tasks NOT currently visible in the chart — these
+                  // are candidates the user can "pull" into the active sprint.
+                  const original = allPillars.find(p => p.id === pillar.id);
+                  const visibleIds = new Set((pillar.tasks ?? []).map(t => t.id));
+                  const hidden = (original?.tasks ?? []).filter(t => !visibleIds.has(t.id));
+                  if (hidden.length === 0) return null;
+                  const panelOpen = addPanelOpen.has(pillar.id);
+                  return (
+                    <div className="border-t border-gray-100 bg-gray-50/50">
+                      <button onClick={() => toggleAddPanel(pillar.id)}
+                        className="w-full flex items-center gap-2 px-12 py-2 text-xs text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50/40 transition-colors">
+                        {panelOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                        <Plus size={12} />
+                        <span>הוסף משימה ל-Sprint {targetSprintIdx}</span>
+                        <span className="text-gray-400">· {hidden.length} זמינות</span>
+                      </button>
+                      {panelOpen && (
+                        <div className="px-12 pb-3 pt-1 space-y-1">
+                          {hidden.map(t => {
+                            const tNotionId = t.notion_page_id ? notionIdMap[t.notion_page_id] : undefined;
+                            const idx = explicitSprintIndex(t.tags ?? null);
+                            const isCleared = isSprintCleared(t.tags ?? null);
+                            const where = isCleared ? "Cleared" : (idx ? `Sprint ${idx}` : "—");
+                            return (
+                              <button key={t.id}
+                                onClick={() => setTaskSprint(t.id, targetSprintIdx)}
+                                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-gray-700 hover:bg-white border border-transparent hover:border-gray-200 transition-colors text-right">
+                                {tNotionId != null && (
+                                  <span className="text-[10px] font-mono text-gray-400 tabular-nums shrink-0 w-10 text-left">#{tNotionId}</span>
+                                )}
+                                <span className="flex-1 truncate">{t.title}</span>
+                                <span className="text-[10px] text-gray-400 shrink-0">{where}</span>
+                                <Plus size={11} className="text-indigo-500 shrink-0" />
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             );
           })}
