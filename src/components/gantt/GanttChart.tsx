@@ -156,8 +156,13 @@ export default function GanttChart({ pillars }: Props) {
   const [visibleSprints, setVisibleSprints] = useState<Set<number>>(new Set());
   const [labelWidth, setLabelWidth] = useState<number>(LABEL_WIDTH_DEFAULT);
 
-  // Load sprint count from storage, default to all visible
+  // Load sprint count + label width + open-all-pillars — mount-only.
+  // Subsequent pillar updates (e.g. after assigning a task) must NOT
+  // re-trigger this, otherwise drawers pop open on every refresh.
+  const didInitRef = useRef(false);
   useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
     try {
       const raw = localStorage.getItem(SPRINT_STORAGE_KEY);
       const n = raw ? Math.max(1, parseInt(raw, 10) || DEFAULT_SPRINT_COUNT) : DEFAULT_SPRINT_COUNT;
@@ -175,7 +180,8 @@ export default function GanttChart({ pillars }: Props) {
       /* noop */
     }
     setHydrated(true);
-  }, [pillars]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -275,17 +281,23 @@ export default function GanttChart({ pillars }: Props) {
             created_at: t.created_at ?? null,
           };
         });
-        setOthersPillar({
-          id: "__others__",
-          name: "Others",
-          color: "#9ca3af",
-          icon: null,
-          tasks: synthesized,
-        });
-        setExpanded(prev => {
-          const next = new Set(prev);
-          next.add("__others__");
-          return next;
+        setOthersPillar(prevOthers => {
+          // Auto-expand only the very first time we surface Others.
+          // After that, respect whatever the user did with the drawer.
+          if (!prevOthers) {
+            setExpanded(prev => {
+              const next = new Set(prev);
+              next.add("__others__");
+              return next;
+            });
+          }
+          return {
+            id: "__others__",
+            name: "Others",
+            color: "#9ca3af",
+            icon: null,
+            tasks: synthesized,
+          };
         });
       })
       .catch(() => { /* swallow */ });
