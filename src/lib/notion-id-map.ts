@@ -73,5 +73,8 @@ export async function loadNotionMetaMap(): Promise<NotionMeta> {
 }
 
 export function clearNotionIdMapCache(): void {
-  cached = null;
+  memCached = null;
+  if (typeof window !== "undefined") {
+    try { localStorage.removeItem(STORAGE_KEY); } catch { /* noop */ }
+  }
 }
