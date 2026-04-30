@@ -39,6 +39,7 @@ const SPRINT_DAYS = 14;
 const DEFAULT_SPRINT_COUNT = 4;
 const SPRINT_STORAGE_KEY = "gantt:sprintCount";
 const LABEL_WIDTH_KEY = "gantt:labelWidth";
+const EXPANDED_KEY = "gantt:expandedPillars";
 const LABEL_WIDTH_DEFAULT = 360;
 const LABEL_WIDTH_MIN = 220;
 const LABEL_WIDTH_MAX = 720;
@@ -156,9 +157,8 @@ export default function GanttChart({ pillars }: Props) {
   const [visibleSprints, setVisibleSprints] = useState<Set<number>>(new Set());
   const [labelWidth, setLabelWidth] = useState<number>(LABEL_WIDTH_DEFAULT);
 
-  // Load sprint count + label width + open-all-pillars — mount-only.
-  // Subsequent pillar updates (e.g. after assigning a task) must NOT
-  // re-trigger this, otherwise drawers pop open on every refresh.
+  // Load sprint count + label width + saved drawer state — mount-only.
+  // Drawers default CLOSED; whatever the user opens persists per browser.
   const didInitRef = useRef(false);
   useEffect(() => {
     if (didInitRef.current) return;
@@ -168,7 +168,6 @@ export default function GanttChart({ pillars }: Props) {
       const n = raw ? Math.max(1, parseInt(raw, 10) || DEFAULT_SPRINT_COUNT) : DEFAULT_SPRINT_COUNT;
       setSprintCount(n);
       setVisibleSprints(new Set(Array.from({ length: n }, (_, i) => i + 1)));
-      setExpanded(new Set(pillars.map(p => p.id))); // open all pillars by default
       const wRaw = localStorage.getItem(LABEL_WIDTH_KEY);
       if (wRaw) {
         const w = parseInt(wRaw, 10);
@@ -176,12 +175,22 @@ export default function GanttChart({ pillars }: Props) {
           setLabelWidth(Math.min(LABEL_WIDTH_MAX, Math.max(LABEL_WIDTH_MIN, w)));
         }
       }
+      const eRaw = localStorage.getItem(EXPANDED_KEY);
+      if (eRaw) {
+        const ids = JSON.parse(eRaw);
+        if (Array.isArray(ids)) setExpanded(new Set(ids.filter(x => typeof x === "string")));
+      }
     } catch {
       /* noop */
     }
     setHydrated(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Persist drawer state per browser
+  useEffect(() => {
+    if (!hydrated) return;
+    try { localStorage.setItem(EXPANDED_KEY, JSON.stringify(Array.from(expanded))); } catch { /* noop */ }
+  }, [hydrated, expanded]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -281,23 +290,12 @@ export default function GanttChart({ pillars }: Props) {
             created_at: t.created_at ?? null,
           };
         });
-        setOthersPillar(prevOthers => {
-          // Auto-expand only the very first time we surface Others.
-          // After that, respect whatever the user did with the drawer.
-          if (!prevOthers) {
-            setExpanded(prev => {
-              const next = new Set(prev);
-              next.add("__others__");
-              return next;
-            });
-          }
-          return {
-            id: "__others__",
-            name: "Others",
-            color: "#9ca3af",
-            icon: null,
-            tasks: synthesized,
-          };
+        setOthersPillar({
+          id: "__others__",
+          name: "Others",
+          color: "#9ca3af",
+          icon: null,
+          tasks: synthesized,
         });
       })
       .catch(() => { /* swallow */ });
