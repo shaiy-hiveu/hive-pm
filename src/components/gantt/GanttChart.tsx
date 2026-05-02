@@ -48,6 +48,9 @@ const LABEL_WIDTH_KEY = "gantt:labelWidth";
 const EXPANDED_KEY = "gantt:expandedPillars";
 const NORMALIZED_KEY = "gantt:normalized";
 const DETAILED_KEY = "gantt:detailed";
+const SORT_KEY = "gantt:sortBy";
+
+type SortBy = "id" | "completion";
 const LABEL_WIDTH_DEFAULT = 360;
 const LABEL_WIDTH_MIN = 220;
 const LABEL_WIDTH_MAX = 720;
@@ -166,6 +169,7 @@ export default function GanttChart({ pillars }: Props) {
   const [labelWidth, setLabelWidth] = useState<number>(LABEL_WIDTH_DEFAULT);
   const [normalized, setNormalized] = useState<boolean>(false);
   const [detailed, setDetailed] = useState<boolean>(true);
+  const [sortBy, setSortBy] = useState<SortBy>("id");
   const [notionIdMap, setNotionIdMap] = useState<Record<string, number>>({});
   const [notionPriorityMap, setNotionPriorityMap] = useState<Record<string, string>>({});
 
@@ -255,6 +259,8 @@ export default function GanttChart({ pillars }: Props) {
       if (nRaw === "true") setNormalized(true);
       const dRaw = localStorage.getItem(DETAILED_KEY);
       if (dRaw === "false") setDetailed(false);
+      const sRaw = localStorage.getItem(SORT_KEY);
+      if (sRaw === "completion" || sRaw === "id") setSortBy(sRaw);
     } catch {
       /* noop */
     }
@@ -270,6 +276,11 @@ export default function GanttChart({ pillars }: Props) {
     if (!hydrated) return;
     try { localStorage.setItem(DETAILED_KEY, String(detailed)); } catch { /* noop */ }
   }, [hydrated, detailed]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    try { localStorage.setItem(SORT_KEY, sortBy); } catch { /* noop */ }
+  }, [hydrated, sortBy]);
 
   // Persist drawer state per browser
   useEffect(() => {
@@ -402,9 +413,8 @@ export default function GanttChart({ pillars }: Props) {
   // 2) When normalized: also drop tasks whose created_at is in the LAST WEEK
   //    of their sprint (planning view, not ongoing).
   const displayPillars = useMemo<Pillar[]>(() => {
-    return allPillars.map(p => ({
-      ...p,
-      tasks: (p.tasks ?? []).filter(t => {
+    return allPillars.map(p => {
+      const filtered = (p.tasks ?? []).filter(t => {
         const sprint = sprintForTask(t, allSprints);
         if (!sprint) return false;
         if (!visibleSprints.has(sprint.index)) return false;
@@ -421,9 +431,23 @@ export default function GanttChart({ pillars }: Props) {
           }
         }
         return true;
-      }),
-    }));
-  }, [allPillars, allSprints, visibleSprints, normalized]);
+      });
+      const sorted = [...filtered].sort((a, b) => {
+        if (sortBy === "completion") {
+          // Highest completion first; ties → fall through to id.
+          const diff = taskCompletion(b) - taskCompletion(a);
+          if (diff !== 0) return diff;
+        }
+        // "By ID" — ascending Notion auto-id; manual tasks (no notion id) push
+        // to the end so the visible #IDs read as a clean sequence.
+        const aId = a.notion_page_id ? notionIdMap[a.notion_page_id] ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+        const bId = b.notion_page_id ? notionIdMap[b.notion_page_id] ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+        if (aId !== bId) return aId - bId;
+        return a.id.localeCompare(b.id);
+      });
+      return { ...p, tasks: sorted };
+    });
+  }, [allPillars, allSprints, visibleSprints, normalized, sortBy, notionIdMap]);
 
   // Completion % per sprint (across all pillars' tasks that belong to that sprint)
   const sprintCompletion = useMemo(() => {
@@ -578,6 +602,29 @@ export default function GanttChart({ pillars }: Props) {
                 className="w-3.5 h-3.5 accent-indigo-600 cursor-pointer" />
               <span>Detailed</span>
             </label>
+            <div className="flex items-center gap-1 text-xs text-gray-500 px-2 py-1 rounded-md select-none">
+              <span className="text-gray-400">Sort:</span>
+              <button
+                onClick={() => setSortBy("id")}
+                className={clsx(
+                  "px-2 py-0.5 rounded text-[11px] transition-colors",
+                  sortBy === "id"
+                    ? "bg-indigo-50 text-indigo-700 border border-indigo-200"
+                    : "text-gray-600 hover:bg-gray-50 border border-transparent"
+                )}>
+                By ID
+              </button>
+              <button
+                onClick={() => setSortBy("completion")}
+                className={clsx(
+                  "px-2 py-0.5 rounded text-[11px] transition-colors",
+                  sortBy === "completion"
+                    ? "bg-indigo-50 text-indigo-700 border border-indigo-200"
+                    : "text-gray-600 hover:bg-gray-50 border border-transparent"
+                )}>
+                By Completion (%)
+              </button>
+            </div>
           </div>
           {/* Grid header */}
           <div
