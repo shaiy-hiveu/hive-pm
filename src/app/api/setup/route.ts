@@ -49,6 +49,13 @@ create table if not exists sprints (
   created_at  timestamptz default now()
 );
 
+create table if not exists sprint_metadata (
+  sprint_index int primary key,
+  name        text,
+  comment     text,
+  updated_at  timestamptz default now()
+);
+
 create table if not exists vision_sections (
   id          uuid primary key default uuid_generate_v4(),
   title       text not null,

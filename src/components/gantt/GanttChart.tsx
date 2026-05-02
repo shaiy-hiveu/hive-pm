@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
-import { ChevronRight, ChevronDown, ChevronsUpDown, ChevronsDownUp, Plus, Minus, ExternalLink, Check, Loader2 } from "lucide-react";
+import { ChevronRight, ChevronDown, ChevronsUpDown, ChevronsDownUp, Plus, Minus, ExternalLink, Check, Loader2, Pencil } from "lucide-react";
 import clsx from "clsx";
 import { loadNotionMetaMap } from "@/lib/notion-id-map";
 import PillarMenu from "@/components/PillarMenu";
@@ -168,6 +168,8 @@ export default function GanttChart({ pillars }: Props) {
   const [sortBy, setSortBy] = useState<SortBy>("id");
   const [notionIdMap, setNotionIdMap] = useState<Record<string, number>>({});
   const [notionPriorityMap, setNotionPriorityMap] = useState<Record<string, string>>({});
+  const [sprintMeta, setSprintMeta] = useState<Record<number, { name: string | null; comment: string | null }>>({});
+  const [editingMeta, setEditingMeta] = useState<{ idx: number; name: string; comment: string } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -178,6 +180,48 @@ export default function GanttChart({ pillars }: Props) {
     });
     return () => { cancelled = true; };
   }, []);
+
+  const reloadSprintMeta = async () => {
+    try {
+      const r = await fetch("/api/sprints/metadata");
+      const data = await r.json();
+      const map: Record<number, { name: string | null; comment: string | null }> = {};
+      for (const item of data.items ?? []) {
+        map[item.sprint_index] = { name: item.name, comment: item.comment };
+      }
+      setSprintMeta(map);
+    } catch { /* swallow */ }
+  };
+
+  useEffect(() => {
+    void reloadSprintMeta();
+  }, []);
+
+  function defaultSprintName(idx: number): string {
+    return `Sprint ${idx}`;
+  }
+  function sprintDisplayName(idx: number): string {
+    return sprintMeta[idx]?.name?.trim() || defaultSprintName(idx);
+  }
+  function sprintComment(idx: number): string | null {
+    return sprintMeta[idx]?.comment ?? null;
+  }
+  function sprintTooltip(idx: number): string {
+    const name = sprintDisplayName(idx);
+    const c = sprintComment(idx);
+    return c ? `${name}\n${c}` : name;
+  }
+
+  async function saveSprintMeta(idx: number, name: string, comment: string): Promise<void> {
+    try {
+      await fetch(`/api/sprints/${idx}/metadata`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name || null, comment: comment || null }),
+      });
+      await reloadSprintMeta();
+    } catch { /* swallow */ }
+  }
 
   async function setTaskSprint(taskId: string, sprintIdx: number | null): Promise<void> {
     try {
@@ -541,17 +585,53 @@ export default function GanttChart({ pillars }: Props) {
           {allSprints.map(s => {
             const isOn = visibleSprints.has(s.index);
             const pct = Math.round((sprintCompletion.get(s.index) ?? 0) * 100);
+            const name = sprintDisplayName(s.index);
+            const comment = sprintComment(s.index);
+            const hasMeta = !!sprintMeta[s.index]?.name || !!comment;
             return (
-              <button key={s.index}
-                onClick={() => toggleSprint(s.index)}
-                onContextMenu={e => { e.preventDefault(); setClearingSprint(s.index); }}
-                className={clsx("inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs border transition-colors",
-                  isOn ? "bg-indigo-50 border-indigo-200 text-indigo-700"
-                       : "bg-white border-gray-200 text-gray-500 hover:border-gray-300")}>
-                <span className="font-medium">Sprint {s.index}</span>
-                <span className="text-[10px] opacity-70">{formatShort(s.start)}–{formatShort(addDays(s.end, -1))}</span>
-                <span className="text-[10px] font-semibold tabular-nums ml-1">{pct}%</span>
-              </button>
+              <div key={s.index} className="relative inline-flex items-center group/sprint">
+                <button
+                  onClick={() => toggleSprint(s.index)}
+                  onContextMenu={e => { e.preventDefault(); setClearingSprint(s.index); }}
+                  title={sprintTooltip(s.index)}
+                  className={clsx("inline-flex items-center gap-1.5 pl-3 pr-2 py-1.5 rounded-full text-xs border transition-colors",
+                    isOn ? "bg-indigo-50 border-indigo-200 text-indigo-700"
+                         : "bg-white border-gray-200 text-gray-500 hover:border-gray-300")}>
+                  <span className="font-medium max-w-[180px] truncate">{name}</span>
+                  <span className="text-[10px] opacity-70 shrink-0">{formatShort(s.start)}–{formatShort(addDays(s.end, -1))}</span>
+                  <span className="text-[10px] font-semibold tabular-nums shrink-0">{pct}%</span>
+                  {comment && <span className="text-[10px] shrink-0" aria-label="comment">💬</span>}
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={e => {
+                      e.stopPropagation();
+                      setEditingMeta({
+                        idx: s.index,
+                        name: sprintMeta[s.index]?.name ?? "",
+                        comment: sprintMeta[s.index]?.comment ?? "",
+                      });
+                    }}
+                    onKeyDown={e => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setEditingMeta({
+                          idx: s.index,
+                          name: sprintMeta[s.index]?.name ?? "",
+                          comment: sprintMeta[s.index]?.comment ?? "",
+                        });
+                      }
+                    }}
+                    title="ערוך שם והערה"
+                    className={clsx(
+                      "ml-0.5 inline-flex items-center justify-center w-4 h-4 rounded-full transition-opacity cursor-pointer",
+                      hasMeta ? "opacity-60 hover:opacity-100" : "opacity-0 group-hover/sprint:opacity-60 hover:!opacity-100"
+                    )}>
+                    <Pencil size={10} />
+                  </span>
+                </button>
+              </div>
             );
           })}
         </div>
@@ -639,8 +719,8 @@ export default function GanttChart({ pillars }: Props) {
             {shownSprints.map(s => {
               const pct = Math.round((sprintCompletion.get(s.index) ?? 0) * 100);
               return (
-                <div key={s.index} className="col-span-2 border-l border-gray-200 px-3 py-2 text-center">
-                  <div className="text-[11px] text-indigo-600 font-semibold">Sprint {s.index}</div>
+                <div key={s.index} className="col-span-2 border-l border-gray-200 px-3 py-2 text-center" title={sprintTooltip(s.index)}>
+                  <div className="text-[11px] text-indigo-600 font-semibold truncate">{sprintDisplayName(s.index)}</div>
                   <div className="text-[10px] text-gray-400">{formatShort(s.start)}–{formatShort(addDays(s.end, -1))}</div>
                   <div className="mt-1.5 flex items-center gap-1.5 justify-center">
                     <div className="flex-1 h-1 bg-gray-200 rounded-full overflow-hidden max-w-[80px]">
@@ -801,6 +881,20 @@ export default function GanttChart({ pillars }: Props) {
             );
           })}
         </div>
+      )}
+
+      {editingMeta != null && (
+        <SprintMetaEditor
+          idx={editingMeta.idx}
+          initialName={editingMeta.name}
+          initialComment={editingMeta.comment}
+          defaultName={defaultSprintName(editingMeta.idx)}
+          onClose={() => setEditingMeta(null)}
+          onSave={async (name, comment) => {
+            await saveSprintMeta(editingMeta.idx, name, comment);
+            setEditingMeta(null);
+          }}
+        />
       )}
 
       {clearingSprint != null && (
@@ -1084,6 +1178,74 @@ function ProgressPicker({ current, hasOverride, onPick }: {
       </button>
       {typeof window !== "undefined" && menu && createPortal(menu, document.body)}
     </>
+  );
+}
+
+function SprintMetaEditor({ idx, initialName, initialComment, defaultName, onClose, onSave }: {
+  idx: number;
+  initialName: string;
+  initialComment: string;
+  defaultName: string;
+  onClose: () => void;
+  onSave: (name: string, comment: string) => Promise<void>;
+}) {
+  const [name, setName] = useState(initialName);
+  const [comment, setComment] = useState(initialComment);
+  const [busy, setBusy] = useState(false);
+  const nameRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { nameRef.current?.focus(); }, []);
+
+  async function commit() {
+    setBusy(true);
+    try { await onSave(name.trim(), comment.trim()); } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={() => !busy && onClose()}>
+      <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6"
+        onClick={e => e.stopPropagation()}>
+        <h3 className="text-base font-semibold text-gray-900 mb-1">עריכת Sprint {idx}</h3>
+        <p className="text-xs text-gray-500 mb-4">תקופת הספרינט תמשיך להופיע מתחת לשם.</p>
+
+        <label className="block text-xs font-medium text-gray-600 mb-1">שם הספרינט</label>
+        <input
+          ref={nameRef}
+          type="text"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === "Enter") { e.preventDefault(); void commit(); }
+            if (e.key === "Escape") { e.preventDefault(); onClose(); }
+          }}
+          placeholder={defaultName}
+          className="w-full px-3 py-2 mb-4 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-indigo-400"
+        />
+
+        <label className="block text-xs font-medium text-gray-600 mb-1">הערה</label>
+        <textarea
+          value={comment}
+          onChange={e => setComment(e.target.value)}
+          onKeyDown={e => { if (e.key === "Escape") { e.preventDefault(); onClose(); } }}
+          placeholder="הערה חופשית (תופיע ב-tooltip)"
+          rows={3}
+          className="w-full px-3 py-2 mb-5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-indigo-400 resize-none"
+        />
+
+        <div className="flex items-center justify-end gap-2">
+          <button onClick={onClose} disabled={busy}
+            className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-900 disabled:opacity-50">
+            ביטול
+          </button>
+          <button onClick={() => void commit()} disabled={busy}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-md disabled:opacity-50">
+            {busy && <Loader2 size={12} className="animate-spin" />}
+            שמור
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
