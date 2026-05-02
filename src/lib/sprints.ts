@@ -63,3 +63,26 @@ export function withSprintTag(tags: string[], sprintIdx: number): string[] {
   const without = tags.filter(t => !t.startsWith(SPRINT_TAG_PREFIX));
   return [...without, `${SPRINT_TAG_PREFIX}${sprintIdx}`];
 }
+
+// ─── Manual progress override (in_progress tasks only) ────────────────────────
+// Stored as `progress:N` (0..100). Honored by the Gantt only when the task's
+// state is "in_progress"; any other state ignores the override and shows the
+// status default. Cleared on every status change in sync-notion-status.
+
+export const PROGRESS_TAG_PREFIX = "progress:";
+
+export function progressOverride(tags: string[] | null | undefined): number | null {
+  if (!tags) return null;
+  const tag = tags.find(t => t.startsWith(PROGRESS_TAG_PREFIX));
+  if (!tag) return null;
+  const n = parseInt(tag.slice(PROGRESS_TAG_PREFIX.length), 10);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, n));
+}
+
+export function withProgressTag(tags: string[], pct: number | null): string[] {
+  const without = tags.filter(t => !t.startsWith(PROGRESS_TAG_PREFIX));
+  if (pct == null) return without;
+  const clamped = Math.max(0, Math.min(100, Math.round(pct)));
+  return [...without, `${PROGRESS_TAG_PREFIX}${clamped}`];
+}

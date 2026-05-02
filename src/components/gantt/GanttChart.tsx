@@ -6,7 +6,7 @@ import { ChevronRight, ChevronDown, ChevronsUpDown, ChevronsDownUp, Plus, Minus,
 import clsx from "clsx";
 import { loadNotionMetaMap } from "@/lib/notion-id-map";
 import PillarMenu from "@/components/PillarMenu";
-import { explicitSprintIndex, currentSprintIndex, isSprintCleared } from "@/lib/sprints";
+import { explicitSprintIndex, currentSprintIndex, isSprintCleared, progressOverride } from "@/lib/sprints";
 
 type Task = {
   id: string;
@@ -83,7 +83,15 @@ function taskState(task: Task): keyof typeof COMPLETION {
 }
 
 function taskCompletion(task: Task): number {
-  return COMPLETION[taskState(task)] ?? 0;
+  const state = taskState(task);
+  // Manual override is honored only while the task is "in_progress". Any other
+  // state ignores the override and shows the status default — so flipping
+  // status visually resets the bar back to the canonical weight.
+  if (state === "in_progress") {
+    const override = progressOverride(task.tags ?? null);
+    if (override != null) return override / 100;
+  }
+  return COMPLETION[state] ?? 0;
 }
 
 function isActiveTask(task: Task): boolean {
@@ -177,6 +185,17 @@ export default function GanttChart({ pillars }: Props) {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sprintIndex: sprintIdx }),
+      });
+      router.refresh();
+    } catch { /* ignore */ }
+  }
+
+  async function setTaskProgress(taskId: string, pct: number | null): Promise<void> {
+    try {
+      await fetch(`/api/tasks/${taskId}/progress`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ progress: pct }),
       });
       router.refresh();
     } catch { /* ignore */ }
@@ -661,7 +680,7 @@ export default function GanttChart({ pillars }: Props) {
 
                 {isOpen && openTasks.length > 0 && (
                   <div>
-                    {openTasks.map(task => <TaskRow key={task.id} task={task} sprints={shownSprints} allSprintsCount={sprintCount} totalWeeks={totalWeeks} labelWidth={labelWidth} pillarColor={pillar.color} notionIdMap={notionIdMap} onSetSprint={setTaskSprint} isSyntheticOthers={pillar.id === "__others__"} realPillars={pillars} onAssignPillar={assignOthersTask} detailed={detailed} />)}
+                    {openTasks.map(task => <TaskRow key={task.id} task={task} sprints={shownSprints} allSprintsCount={sprintCount} totalWeeks={totalWeeks} labelWidth={labelWidth} pillarColor={pillar.color} notionIdMap={notionIdMap} onSetSprint={setTaskSprint} onSetProgress={setTaskProgress} isSyntheticOthers={pillar.id === "__others__"} realPillars={pillars} onAssignPillar={assignOthersTask} detailed={detailed} />)}
                   </div>
                 )}
                 {isOpen && openTasks.length === 0 && (
@@ -771,7 +790,7 @@ export default function GanttChart({ pillars }: Props) {
   );
 }
 
-function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pillarColor, notionIdMap, onSetSprint, isSyntheticOthers, realPillars, onAssignPillar, detailed }: {
+function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pillarColor, notionIdMap, onSetSprint, onSetProgress, isSyntheticOthers, realPillars, onAssignPillar, detailed }: {
   task: Task;
   sprints: Sprint[];
   allSprintsCount: number;
@@ -780,6 +799,7 @@ function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pilla
   pillarColor?: string;
   notionIdMap: Record<string, number>;
   onSetSprint: (taskId: string, sprintIdx: number | null) => Promise<void>;
+  onSetProgress: (taskId: string, pct: number | null) => Promise<void>;
   isSyntheticOthers: boolean;
   realPillars: Pillar[];
   onAssignPillar: (notionPageId: string, pillarId: string | null) => Promise<void>;
@@ -862,7 +882,14 @@ function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pilla
             allowUnassign={false}
           />
         )}
-        {detailed && (
+        {detailed && state === "in_progress" && (
+          <ProgressPicker
+            current={completionPct}
+            hasOverride={progressOverride(task.tags ?? null) != null}
+            onPick={pct => onSetProgress(task.id, pct)}
+          />
+        )}
+        {detailed && state !== "in_progress" && (
           <span className="text-[10px] text-gray-500 shrink-0 tabular-nums">{completionPct}%</span>
         )}
         {due && (
@@ -913,6 +940,104 @@ function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pilla
         </div>
       </div>
     </div>
+  );
+}
+
+// In-progress tasks expose a discrete % picker. Allowed values 30..70 in
+// steps of 10 — anything outside that range belongs to a different status
+// (todo 0, done 80, approved 100).
+const PROGRESS_OPTIONS = [30, 40, 50, 60, 70] as const;
+
+function ProgressPicker({ current, hasOverride, onPick }: {
+  current: number;
+  hasOverride: boolean;
+  onPick: (pct: number | null) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const MENU_W = 110;
+  const ROW_H = 28;
+  const MENU_H = PROGRESS_OPTIONS.length * ROW_H + 8;
+
+  function computePos() {
+    const r = triggerRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const spaceBelow = window.innerHeight - r.bottom;
+    const goUp = spaceBelow < MENU_H + 12;
+    const top = goUp ? Math.max(8, r.top - MENU_H - 4) : r.bottom + 4;
+    const right = Math.max(8, window.innerWidth - r.right);
+    setPos({ top, right });
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    function handler(e: MouseEvent) {
+      const t = e.target as Node;
+      if (menuRef.current?.contains(t)) return;
+      if (triggerRef.current?.contains(t)) return;
+      setOpen(false);
+    }
+    function onMove() { computePos(); }
+    document.addEventListener("mousedown", handler);
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onMove);
+    };
+  }, [open]);
+
+  async function pick(pct: number) {
+    if (pct === current && hasOverride) { setOpen(false); return; }
+    setBusy(true);
+    try { await onPick(pct); } finally { setBusy(false); setOpen(false); }
+  }
+
+  function toggle() {
+    if (!open) computePos();
+    setOpen(o => !o);
+  }
+
+  const menu = open && pos && (
+    <div
+      ref={menuRef}
+      style={{ position: "fixed", top: pos.top, right: pos.right, width: MENU_W, zIndex: 60 }}
+      className="bg-white border border-gray-200 rounded-lg shadow-lg py-1"
+      onClick={e => e.stopPropagation()}
+    >
+      {PROGRESS_OPTIONS.map(n => (
+        <button key={n} onClick={() => pick(n)} disabled={busy}
+          className="w-full flex items-center justify-between px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 text-right disabled:opacity-50">
+          <span className="tabular-nums">{n}%</span>
+          {n === current && hasOverride && <Check size={12} className="text-indigo-500" />}
+        </button>
+      ))}
+    </div>
+  );
+
+  return (
+    <>
+      <button ref={triggerRef}
+        onClick={e => { e.stopPropagation(); toggle(); }}
+        onDoubleClick={e => e.stopPropagation()}
+        onContextMenu={e => e.stopPropagation()}
+        className={clsx(
+          "inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded border tabular-nums shrink-0 transition-colors",
+          hasOverride
+            ? "bg-indigo-50 border-indigo-200 text-indigo-700 hover:border-indigo-400"
+            : "border-gray-200 text-gray-600 hover:border-gray-400"
+        )}
+        title="לחץ כדי לערוך אחוז התקדמות (זמין רק למשימות In progress)">
+        {current}%
+        {busy ? <Loader2 size={9} className="animate-spin" /> : <ChevronDown size={9} className="opacity-60" />}
+      </button>
+      {typeof window !== "undefined" && menu && createPortal(menu, document.body)}
+    </>
   );
 }
 

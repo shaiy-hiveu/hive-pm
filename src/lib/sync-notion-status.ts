@@ -1,5 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import { fetchNotionTasks } from "@/lib/notion";
+import { withProgressTag, progressOverride } from "@/lib/sprints";
 
 function mapStatus(s: string | null): "todo" | "in_progress" | "done" | "blocked" {
   if (!s) return "todo";
@@ -41,6 +42,11 @@ export async function syncNotionStatus(): Promise<SyncResult> {
     let nextTags = currentTags;
     if (isApprovedNow && !hadApproved) nextTags = [...currentTags, "notion:approved"];
     else if (!isApprovedNow && hadApproved) nextTags = currentTags.filter(x => x !== "notion:approved");
+    // Manual progress override is per-status: when status changes, drop the
+    // override so the bar reverts to the new status' default weight.
+    if (newStatus !== row.status && progressOverride(nextTags) != null) {
+      nextTags = withProgressTag(nextTags, null);
+    }
     const newDue = t.due_date ?? null;
 
     const tagsChanged = nextTags !== currentTags;

@@ -143,7 +143,7 @@ export default function HelpPage() {
             <li><strong>Product</strong> — sky-blue chip.</li>
             <li><strong>Status</strong> — To-do / In progress / Done / Approved (Approved = pulled from a Notion <em>Approved</em> state and counted as 100% complete).</li>
             <li><strong>S{`{N}`}</strong> — the sprint picker chip. Click to move the task to a different sprint (replaces its <code>sprint:N</code> tag).</li>
-            <li><strong>%</strong> — completion weight (To-do: 0%, In progress: 30%, Done: 80%, Approved: 100%).</li>
+            <li><strong>%</strong> — completion weight. Defaults: To-do 0%, In progress 30%, Done 80%, Approved 100%. Only <em>In progress</em> tasks expose an editable chip — click it to choose 30 / 40 / 50 / 60 / 70%, overriding the default. The override is stored on the task. Any status change automatically resets the value to the new status&apos; default.</li>
             <li><strong>📅 Due date</strong> — if the task has one in Notion.</li>
             <li><strong>External-link icon</strong> — opens the task in Notion. <strong>Double-click or right-click</strong> the row does the same thing.</li>
           </ul>
