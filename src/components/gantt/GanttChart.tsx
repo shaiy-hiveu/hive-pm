@@ -97,10 +97,6 @@ function taskCompletion(task: Task): number {
   return COMPLETION[state] ?? 0;
 }
 
-function isActiveTask(task: Task): boolean {
-  return taskState(task) !== "approved" && task.status !== "done";
-}
-
 function addDays(d: Date, n: number): Date {
   const r = new Date(d);
   r.setDate(r.getDate() + n);
@@ -670,7 +666,10 @@ export default function GanttChart({ pillars }: Props) {
           )}
           {displayPillars.map((pillar, idx) => {
             const allTasks = pillar.tasks ?? [];
-            const activeTasks = allTasks.filter(isActiveTask);
+            // Counter shows tasks that reached at least 70% completion out of
+            // the total. Approved/done count as 100%/80%; In progress with a
+            // manual override at 70% also counts.
+            const tasksAt70 = allTasks.filter(t => taskCompletion(t) >= 0.7);
             const openTasks = allTasks; // show every task; completion shows via bar/label
             const isOpen = expanded.has(pillar.id);
             const pillarPct = allTasks.length === 0
@@ -710,7 +709,7 @@ export default function GanttChart({ pillars }: Props) {
                     {pillar.id === "__others__" && (
                       <span className="text-[10px] text-gray-400">משימות שהושלמו בספרינט הנוכחי וטרם שויכו</span>
                     )}
-                    <span className="text-xs text-gray-400">· {activeTasks.length}/{allTasks.length}</span>
+                    <span className="text-xs text-gray-400" title="משימות שהגיעו ל-70% ומעלה מתוך כלל המשימות">· {tasksAt70.length}/{allTasks.length}</span>
                     <div className="ml-auto flex items-center gap-2">
                       <div className="w-24 h-1.5 bg-gray-100 rounded-full overflow-hidden">
                         <div className="h-full transition-all" style={{ width: `${pillarPct}%`, backgroundColor: pillarHex }} />
