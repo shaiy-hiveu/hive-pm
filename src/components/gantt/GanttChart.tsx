@@ -51,6 +51,8 @@ const DETAILED_KEY = "gantt:detailed";
 const SORT_KEY = "gantt:sortBy";
 
 type SortBy = "id" | "completion";
+
+type SprintGoal = { text: string; completion: number };
 const LABEL_WIDTH_DEFAULT = 360;
 const LABEL_WIDTH_MIN = 220;
 const LABEL_WIDTH_MAX = 720;
@@ -168,8 +170,8 @@ export default function GanttChart({ pillars }: Props) {
   const [sortBy, setSortBy] = useState<SortBy>("id");
   const [notionIdMap, setNotionIdMap] = useState<Record<string, number>>({});
   const [notionPriorityMap, setNotionPriorityMap] = useState<Record<string, string>>({});
-  const [sprintMeta, setSprintMeta] = useState<Record<number, { name: string | null; comment: string | null }>>({});
-  const [editingMeta, setEditingMeta] = useState<{ idx: number; name: string; comment: string } | null>(null);
+  const [sprintMeta, setSprintMeta] = useState<Record<number, { name: string | null; comment: string | null; goals: SprintGoal[] }>>({});
+  const [editingMeta, setEditingMeta] = useState<{ idx: number; name: string; comment: string; goals: SprintGoal[] } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -185,9 +187,13 @@ export default function GanttChart({ pillars }: Props) {
     try {
       const r = await fetch("/api/sprints/metadata");
       const data = await r.json();
-      const map: Record<number, { name: string | null; comment: string | null }> = {};
+      const map: Record<number, { name: string | null; comment: string | null; goals: SprintGoal[] }> = {};
       for (const item of data.items ?? []) {
-        map[item.sprint_index] = { name: item.name, comment: item.comment };
+        map[item.sprint_index] = {
+          name: item.name,
+          comment: item.comment,
+          goals: Array.isArray(item.goals) ? item.goals : [],
+        };
       }
       setSprintMeta(map);
     } catch { /* swallow */ }
@@ -206,18 +212,29 @@ export default function GanttChart({ pillars }: Props) {
   function sprintComment(idx: number): string | null {
     return sprintMeta[idx]?.comment ?? null;
   }
+  function sprintGoalsList(idx: number): SprintGoal[] {
+    return sprintMeta[idx]?.goals ?? [];
+  }
   function sprintTooltip(idx: number): string {
     const name = sprintDisplayName(idx);
+    const lines: string[] = [name];
     const c = sprintComment(idx);
-    return c ? `${name}\n${c}` : name;
+    if (c) lines.push(c);
+    const goals = sprintGoalsList(idx);
+    if (goals.length > 0) {
+      lines.push("");
+      lines.push("Goals:");
+      for (const g of goals) lines.push(`• ${g.text} (${g.completion}%)`);
+    }
+    return lines.join("\n");
   }
 
-  async function saveSprintMeta(idx: number, name: string, comment: string): Promise<void> {
+  async function saveSprintMeta(idx: number, name: string, comment: string, goals: SprintGoal[]): Promise<void> {
     try {
       await fetch(`/api/sprints/${idx}/metadata`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name || null, comment: comment || null }),
+        body: JSON.stringify({ name: name || null, comment: comment || null, goals }),
       });
       await reloadSprintMeta();
     } catch { /* swallow */ }
@@ -587,7 +604,8 @@ export default function GanttChart({ pillars }: Props) {
             const pct = Math.round((sprintCompletion.get(s.index) ?? 0) * 100);
             const name = sprintDisplayName(s.index);
             const comment = sprintComment(s.index);
-            const hasMeta = !!sprintMeta[s.index]?.name || !!comment;
+            const goals = sprintGoalsList(s.index);
+            const hasMeta = !!sprintMeta[s.index]?.name || !!comment || goals.length > 0;
             return (
               <div key={s.index} className="relative inline-flex items-center group/sprint">
                 <button
@@ -601,6 +619,13 @@ export default function GanttChart({ pillars }: Props) {
                   <span className="text-[10px] opacity-70 shrink-0">{formatShort(s.start)}–{formatShort(addDays(s.end, -1))}</span>
                   <span className="text-[10px] font-semibold tabular-nums shrink-0">{pct}%</span>
                   {comment && <span className="text-[10px] shrink-0" aria-label="comment">💬</span>}
+                  {goals.length > 0 && (
+                    <span
+                      title={`${goals.length} ${goals.length === 1 ? "goal" : "goals"}`}
+                      className="inline-flex items-center justify-center text-[10px] font-semibold rounded-full bg-emerald-100 text-emerald-700 w-4 h-4 shrink-0 tabular-nums">
+                      {goals.length}
+                    </span>
+                  )}
                   <span
                     role="button"
                     tabIndex={0}
@@ -610,6 +635,7 @@ export default function GanttChart({ pillars }: Props) {
                         idx: s.index,
                         name: sprintMeta[s.index]?.name ?? "",
                         comment: sprintMeta[s.index]?.comment ?? "",
+                        goals: sprintMeta[s.index]?.goals ?? [],
                       });
                     }}
                     onKeyDown={e => {
@@ -620,10 +646,11 @@ export default function GanttChart({ pillars }: Props) {
                           idx: s.index,
                           name: sprintMeta[s.index]?.name ?? "",
                           comment: sprintMeta[s.index]?.comment ?? "",
+                          goals: sprintMeta[s.index]?.goals ?? [],
                         });
                       }
                     }}
-                    title="ערוך שם והערה"
+                    title="Edit name, comment, and goals"
                     className={clsx(
                       "ml-0.5 inline-flex items-center justify-center w-4 h-4 rounded-full transition-opacity cursor-pointer",
                       hasMeta ? "opacity-60 hover:opacity-100" : "opacity-0 group-hover/sprint:opacity-60 hover:!opacity-100"
@@ -888,10 +915,11 @@ export default function GanttChart({ pillars }: Props) {
           idx={editingMeta.idx}
           initialName={editingMeta.name}
           initialComment={editingMeta.comment}
+          initialGoals={editingMeta.goals}
           defaultName={defaultSprintName(editingMeta.idx)}
           onClose={() => setEditingMeta(null)}
-          onSave={async (name, comment) => {
-            await saveSprintMeta(editingMeta.idx, name, comment);
+          onSave={async (name, comment, goals) => {
+            await saveSprintMeta(editingMeta.idx, name, comment, goals);
             setEditingMeta(null);
           }}
         />
@@ -1181,35 +1209,57 @@ function ProgressPicker({ current, hasOverride, onPick }: {
   );
 }
 
-function SprintMetaEditor({ idx, initialName, initialComment, defaultName, onClose, onSave }: {
+const GOAL_PCT_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] as const;
+
+function SprintMetaEditor({ idx, initialName, initialComment, initialGoals, defaultName, onClose, onSave }: {
   idx: number;
   initialName: string;
   initialComment: string;
+  initialGoals: SprintGoal[];
   defaultName: string;
   onClose: () => void;
-  onSave: (name: string, comment: string) => Promise<void>;
+  onSave: (name: string, comment: string, goals: SprintGoal[]) => Promise<void>;
 }) {
   const [name, setName] = useState(initialName);
   const [comment, setComment] = useState(initialComment);
+  const [goals, setGoals] = useState<SprintGoal[]>(initialGoals.length > 0 ? initialGoals : []);
   const [busy, setBusy] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { nameRef.current?.focus(); }, []);
 
+  function updateGoal(i: number, patch: Partial<SprintGoal>) {
+    setGoals(prev => prev.map((g, j) => j === i ? { ...g, ...patch } : g));
+  }
+  function addGoal() {
+    setGoals(prev => [...prev, { text: "", completion: 10 }]);
+  }
+  function removeGoal(i: number) {
+    setGoals(prev => prev.filter((_, j) => j !== i));
+  }
+
   async function commit() {
     setBusy(true);
-    try { await onSave(name.trim(), comment.trim()); } finally { setBusy(false); }
+    try {
+      const cleanedGoals = goals
+        .map(g => ({ text: g.text.trim(), completion: Math.max(0, Math.min(100, Math.round(g.completion))) }))
+        .filter(g => g.text.length > 0);
+      await onSave(name.trim(), comment.trim(), cleanedGoals);
+    } finally { setBusy(false); }
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
       onClick={() => !busy && onClose()}>
-      <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6"
+      <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6 max-h-[90vh] overflow-y-auto"
         onClick={e => e.stopPropagation()}>
-        <h3 className="text-base font-semibold text-gray-900 mb-1">עריכת Sprint {idx}</h3>
-        <p className="text-xs text-gray-500 mb-4">תקופת הספרינט תמשיך להופיע מתחת לשם.</p>
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-lg font-semibold text-gray-900">Edit Sprint {idx}</h3>
+          <span className="text-[10px] text-gray-400 uppercase tracking-wider">Sprint metadata</span>
+        </div>
+        <p className="text-xs text-gray-500 mb-5">The sprint date range stays visible under the name.</p>
 
-        <label className="block text-xs font-medium text-gray-600 mb-1">שם הספרינט</label>
+        <label className="block text-xs font-medium text-gray-600 mb-1">Name</label>
         <input
           ref={nameRef}
           type="text"
@@ -1223,25 +1273,64 @@ function SprintMetaEditor({ idx, initialName, initialComment, defaultName, onClo
           className="w-full px-3 py-2 mb-4 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-indigo-400"
         />
 
-        <label className="block text-xs font-medium text-gray-600 mb-1">הערה</label>
+        <label className="block text-xs font-medium text-gray-600 mb-1">Comment</label>
         <textarea
           value={comment}
           onChange={e => setComment(e.target.value)}
           onKeyDown={e => { if (e.key === "Escape") { e.preventDefault(); onClose(); } }}
-          placeholder="הערה חופשית (תופיע ב-tooltip)"
-          rows={3}
+          placeholder="Free-text note (shows in tooltip)"
+          rows={2}
           className="w-full px-3 py-2 mb-5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-indigo-400 resize-none"
         />
+
+        <div className="flex items-center justify-between mb-2">
+          <label className="block text-xs font-medium text-gray-600">Goals</label>
+          <span className="text-[10px] text-gray-400">{goals.length} {goals.length === 1 ? "goal" : "goals"}</span>
+        </div>
+        <div className="space-y-2 mb-3">
+          {goals.length === 0 && (
+            <div className="text-xs text-gray-400 italic px-1">No goals yet. Add one to track progress for this sprint.</div>
+          )}
+          {goals.map((g, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <input
+                type="text"
+                value={g.text}
+                onChange={e => updateGoal(i, { text: e.target.value })}
+                placeholder={`Goal ${i + 1}`}
+                className="flex-1 min-w-0 px-3 py-1.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-indigo-400"
+              />
+              <select
+                value={g.completion}
+                onChange={e => updateGoal(i, { completion: Number(e.target.value) })}
+                className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:border-indigo-400 cursor-pointer tabular-nums">
+                {GOAL_PCT_OPTIONS.map(p => (
+                  <option key={p} value={p}>{p}%</option>
+                ))}
+              </select>
+              <button
+                onClick={() => removeGoal(i)}
+                title="Remove goal"
+                className="text-gray-300 hover:text-red-500 transition-colors px-1">
+                <Minus size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <button onClick={addGoal}
+          className="inline-flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-800 font-medium mb-5">
+          <Plus size={12} /> Add goal
+        </button>
 
         <div className="flex items-center justify-end gap-2">
           <button onClick={onClose} disabled={busy}
             className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-900 disabled:opacity-50">
-            ביטול
+            Cancel
           </button>
           <button onClick={() => void commit()} disabled={busy}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-md disabled:opacity-50">
+            className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-md disabled:opacity-50">
             {busy && <Loader2 size={12} className="animate-spin" />}
-            שמור
+            Save
           </button>
         </div>
       </div>

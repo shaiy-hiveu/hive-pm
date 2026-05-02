@@ -15,11 +15,25 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const body = await req.json().catch(() => ({}));
     const name = body.name === undefined ? undefined : (body.name === null || body.name === "" ? null : String(body.name).trim());
     const comment = body.comment === undefined ? undefined : (body.comment === null || body.comment === "" ? null : String(body.comment).trim());
+    let goals: { text: string; completion: number }[] | undefined;
+    if (Array.isArray(body.goals)) {
+      goals = body.goals
+        .map((g: unknown) => {
+          const obj = g as { text?: unknown; completion?: unknown };
+          const text = typeof obj?.text === "string" ? obj.text.trim() : "";
+          const completion = Number(obj?.completion);
+          if (!text) return null;
+          if (!Number.isFinite(completion)) return null;
+          return { text, completion: Math.max(0, Math.min(100, Math.round(completion))) };
+        })
+        .filter((g: { text: string; completion: number } | null): g is { text: string; completion: number } => g !== null);
+    }
 
     const db = supabaseAdmin();
     const row: Record<string, unknown> = { sprint_index: sprintIdx, updated_at: new Date().toISOString() };
     if (name !== undefined) row.name = name;
     if (comment !== undefined) row.comment = comment;
+    if (goals !== undefined) row.goals = goals;
 
     const { error } = await db
       .from("sprint_metadata")

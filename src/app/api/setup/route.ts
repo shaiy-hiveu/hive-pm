@@ -53,8 +53,10 @@ create table if not exists sprint_metadata (
   sprint_index int primary key,
   name        text,
   comment     text,
+  goals       jsonb not null default '[]'::jsonb,
   updated_at  timestamptz default now()
 );
+alter table sprint_metadata add column if not exists goals jsonb not null default '[]'::jsonb;
 
 create table if not exists vision_sections (
   id          uuid primary key default uuid_generate_v4(),
