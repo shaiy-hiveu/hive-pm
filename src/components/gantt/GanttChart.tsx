@@ -47,6 +47,7 @@ const SPRINT_STORAGE_KEY = "gantt:sprintCount";
 const LABEL_WIDTH_KEY = "gantt:labelWidth";
 const EXPANDED_KEY = "gantt:expandedPillars";
 const NORMALIZED_KEY = "gantt:normalized";
+const DETAILED_KEY = "gantt:detailed";
 const LABEL_WIDTH_DEFAULT = 360;
 const LABEL_WIDTH_MIN = 220;
 const LABEL_WIDTH_MAX = 720;
@@ -156,6 +157,7 @@ export default function GanttChart({ pillars }: Props) {
   const [visibleSprints, setVisibleSprints] = useState<Set<number>>(new Set());
   const [labelWidth, setLabelWidth] = useState<number>(LABEL_WIDTH_DEFAULT);
   const [normalized, setNormalized] = useState<boolean>(false);
+  const [detailed, setDetailed] = useState<boolean>(true);
   const [notionIdMap, setNotionIdMap] = useState<Record<string, number>>({});
   const [notionPriorityMap, setNotionPriorityMap] = useState<Record<string, string>>({});
 
@@ -232,6 +234,8 @@ export default function GanttChart({ pillars }: Props) {
       }
       const nRaw = localStorage.getItem(NORMALIZED_KEY);
       if (nRaw === "true") setNormalized(true);
+      const dRaw = localStorage.getItem(DETAILED_KEY);
+      if (dRaw === "false") setDetailed(false);
     } catch {
       /* noop */
     }
@@ -242,6 +246,11 @@ export default function GanttChart({ pillars }: Props) {
     if (!hydrated) return;
     try { localStorage.setItem(NORMALIZED_KEY, String(normalized)); } catch { /* noop */ }
   }, [hydrated, normalized]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    try { localStorage.setItem(DETAILED_KEY, String(detailed)); } catch { /* noop */ }
+  }, [hydrated, detailed]);
 
   // Persist drawer state per browser
   useEffect(() => {
@@ -542,6 +551,14 @@ export default function GanttChart({ pillars }: Props) {
                 className="w-3.5 h-3.5 accent-indigo-600 cursor-pointer" />
               <span>Normalized</span>
             </label>
+            <label className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-800 cursor-pointer select-none px-2 py-1 rounded-md hover:bg-gray-50 transition-colors"
+              title="הצג צ׳יפים נוספים בשורת המשימה (סוג, מוצר, סטטוס, ספרינט, אחוז סיום)">
+              <input type="checkbox"
+                checked={detailed}
+                onChange={e => setDetailed(e.target.checked)}
+                className="w-3.5 h-3.5 accent-indigo-600 cursor-pointer" />
+              <span>Detailed</span>
+            </label>
           </div>
           {/* Grid header */}
           <div
@@ -644,7 +661,7 @@ export default function GanttChart({ pillars }: Props) {
 
                 {isOpen && openTasks.length > 0 && (
                   <div>
-                    {openTasks.map(task => <TaskRow key={task.id} task={task} sprints={shownSprints} allSprintsCount={sprintCount} totalWeeks={totalWeeks} labelWidth={labelWidth} pillarColor={pillar.color} notionIdMap={notionIdMap} onSetSprint={setTaskSprint} isSyntheticOthers={pillar.id === "__others__"} realPillars={pillars} onAssignPillar={assignOthersTask} />)}
+                    {openTasks.map(task => <TaskRow key={task.id} task={task} sprints={shownSprints} allSprintsCount={sprintCount} totalWeeks={totalWeeks} labelWidth={labelWidth} pillarColor={pillar.color} notionIdMap={notionIdMap} onSetSprint={setTaskSprint} isSyntheticOthers={pillar.id === "__others__"} realPillars={pillars} onAssignPillar={assignOthersTask} detailed={detailed} />)}
                   </div>
                 )}
                 {isOpen && openTasks.length === 0 && (
@@ -754,7 +771,7 @@ export default function GanttChart({ pillars }: Props) {
   );
 }
 
-function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pillarColor, notionIdMap, onSetSprint, isSyntheticOthers, realPillars, onAssignPillar }: {
+function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pillarColor, notionIdMap, onSetSprint, isSyntheticOthers, realPillars, onAssignPillar, detailed }: {
   task: Task;
   sprints: Sprint[];
   allSprintsCount: number;
@@ -766,6 +783,7 @@ function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pilla
   isSyntheticOthers: boolean;
   realPillars: Pillar[];
   onAssignPillar: (notionPageId: string, pillarId: string | null) => Promise<void>;
+  detailed: boolean;
 }) {
   const notionId = task.notion_page_id ? notionIdMap[task.notion_page_id] : undefined;
   const targetSprint = sprintForTask(task, sprints);
@@ -814,20 +832,22 @@ function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pilla
             {task.title}
           </span>
         </span>
-        {tag && (
+        {detailed && tag && (
           <span className="text-[10px] px-1.5 py-0.5 rounded border border-gray-200 text-gray-500 capitalize shrink-0">
             {tag}
           </span>
         )}
-        {task.product && (
+        {detailed && task.product && (
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200 shrink-0">
             {task.product}
           </span>
         )}
-        <span className={clsx("text-[10px] px-1.5 py-0.5 rounded border shrink-0", STATUS_STYLE[state] ?? STATUS_STYLE.todo)}>
-          {STATUS_LABEL[state] ?? state}
-        </span>
-        {!isSyntheticOthers && (
+        {detailed && (
+          <span className={clsx("text-[10px] px-1.5 py-0.5 rounded border shrink-0", STATUS_STYLE[state] ?? STATUS_STYLE.todo)}>
+            {STATUS_LABEL[state] ?? state}
+          </span>
+        )}
+        {detailed && !isSyntheticOthers && (
           <SprintPicker
             current={taskSprintIdx}
             count={allSprintsCount}
@@ -842,7 +862,9 @@ function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pilla
             allowUnassign={false}
           />
         )}
-        <span className="text-[10px] text-gray-500 shrink-0 tabular-nums">{completionPct}%</span>
+        {detailed && (
+          <span className="text-[10px] text-gray-500 shrink-0 tabular-nums">{completionPct}%</span>
+        )}
         {due && (
           <span className="text-[10px] text-gray-500 shrink-0 tabular-nums">
             📅 {formatLong(due)}
