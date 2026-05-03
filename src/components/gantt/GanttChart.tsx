@@ -38,6 +38,9 @@ type Sprint = {
 
 type Props = {
   pillars: Pillar[];
+  // DB tasks with `pillar_id = null` — pinned-into-Others rows. Folded into
+  // the synthetic Others row at runtime so the gantt has one Others view.
+  orphanTasks?: Task[];
 };
 
 const BASE_DATE = new Date(2026, 3, 19); // 19 April 2026 (month is 0-indexed)
@@ -165,7 +168,7 @@ function weekIndexOf(date: Date, sprints: Sprint[]): number | null {
   return Math.min(Math.floor(diffDays / 7), total - 1);
 }
 
-export default function GanttChart({ pillars }: Props) {
+export default function GanttChart({ pillars, orphanTasks = [] }: Props) {
   const router = useRouter();
   const [sprintCount, setSprintCount] = useState<number>(DEFAULT_SPRINT_COUNT);
   const [hydrated, setHydrated] = useState(false);
@@ -476,13 +479,23 @@ export default function GanttChart({ pillars }: Props) {
   useEffect(() => {
     if (allSprints.length === 0) return;
     let cancelled = false;
+    // Tasks already represented elsewhere — skip them when synthesizing
+    // from Notion. Includes pillar-assigned rows AND orphan DB rows
+    // (pillar_id = null pinned-to-Others tasks), so we don't show the
+    // same notion task twice.
     const assigned = new Set<string>();
     for (const p of pillars) {
       for (const t of p.tasks ?? []) {
-        const pageId = (t as Task & { notion_page_id?: string | null }).notion_page_id;
-        if (pageId) assigned.add(pageId);
+        if (t.notion_page_id) assigned.add(t.notion_page_id);
       }
     }
+    for (const t of orphanTasks) {
+      if (t.notion_page_id) assigned.add(t.notion_page_id);
+    }
+    // Orphan DB tasks are real rows with explicit sprint:N tags. They
+    // belong in Others as the "pinned" portion. Include them up-front.
+    const fromOrphans: Task[] = orphanTasks.map(t => ({ ...t }));
+
     fetch("/api/notion/tasks?includeAssigned=true")
       .then(r => r.json())
       .then(data => {
@@ -507,7 +520,6 @@ export default function GanttChart({ pillars }: Props) {
           if (Number.isNaN(created.getTime())) return false;
           return created >= windowStart && created <= windowEnd;
         });
-        if (filtered.length === 0) { setOthersPillar(null); return; }
         const synthesized: Task[] = filtered.map(t => {
           const tags: string[] = [];
           if (t.type) tags.push(t.type);
@@ -530,17 +542,19 @@ export default function GanttChart({ pillars }: Props) {
             created_at: t.created_at ?? null,
           };
         });
+        const allOthers = [...fromOrphans, ...synthesized];
+        if (allOthers.length === 0) { setOthersPillar(null); return; }
         setOthersPillar({
           id: "__others__",
           name: "Others",
           color: "#9ca3af",
           icon: null,
-          tasks: synthesized,
+          tasks: allOthers,
         });
       })
       .catch(() => { /* swallow */ });
     return () => { cancelled = true; };
-  }, [allSprints, pillars, now]);
+  }, [allSprints, pillars, orphanTasks, now]);
 
   const allPillars = useMemo<Pillar[]>(() => {
     // Show Others whenever any of its synthesized tasks belongs to a sprint

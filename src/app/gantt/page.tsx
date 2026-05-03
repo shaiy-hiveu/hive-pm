@@ -7,10 +7,13 @@ export const dynamic = "force-dynamic";
 
 export default async function GanttPage() {
   const db = supabaseAdmin();
-  const { data: pillars } = await db
-    .from("pillars")
-    .select(`*, tasks (*)`)
-    .order("order_index");
+  const [{ data: pillars }, { data: orphanTasks }] = await Promise.all([
+    db.from("pillars").select(`*, tasks (*)`).order("order_index"),
+    // Tasks pinned to a sprint without belonging to any pillar — these
+    // populate the synthetic Others row in the gantt. is.null is the
+    // PostgREST filter for IS NULL.
+    db.from("tasks").select("*").is("pillar_id", null),
+  ]);
 
   return (
     <div className="max-w-7xl mx-auto space-y-6 px-4">
@@ -21,7 +24,7 @@ export default async function GanttPage() {
         </div>
         <RefreshDataButton />
       </div>
-      <GanttChart pillars={pillars ?? []} />
+      <GanttChart pillars={pillars ?? []} orphanTasks={orphanTasks ?? []} />
       <NotionTasksSummary pillars={pillars ?? []} />
     </div>
   );
