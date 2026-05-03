@@ -268,8 +268,9 @@ export default function GanttChart({ pillars }: Props) {
   // Pins every task currently shown in the *now*-current sprint without an
   // explicit `sprint:N` tag — i.e., every auto-assigned task — by giving it
   // an explicit tag. After this, those tasks won't migrate forward when the
-  // calendar (or debug date) advances. Skips Others-pillar synthetic rows
-  // (they aren't real DB rows yet — user must assign them to a pillar first).
+  // calendar (or debug date) advances. Also handles Others-pillar synthetic
+  // rows: they don't have DB rows yet, so we create one with pillar_id=null
+  // and the explicit sprint tag via /api/tasks/pin-notion.
   const [pinningSprint, setPinningSprint] = useState(false);
   const [pinResult, setPinResult] = useState<string | null>(null);
   async function pinAutoAssignedToCurrentSprint(): Promise<void> {
@@ -277,25 +278,52 @@ export default function GanttChart({ pillars }: Props) {
     setPinResult(null);
     try {
       const targetIdx = currentSprintIndex(allSprints.length, now);
-      const candidates: string[] = [];
+
+      // Real DB tasks (any pillar): tag-update via /api/tasks/[id]/sprint.
+      const dbCandidateIds: string[] = [];
       for (const p of pillars) {
         for (const t of p.tasks ?? []) {
           if (explicitSprintIndex(t.tags ?? null) != null) continue;
           if (isSprintCleared(t.tags ?? null)) continue;
           const resolved = sprintForTask(t, allSprints, now);
-          if (resolved?.index === targetIdx) candidates.push(t.id);
+          if (resolved?.index === targetIdx) dbCandidateIds.push(t.id);
         }
       }
-      if (candidates.length === 0) {
+
+      // Others-pillar synthetic tasks (no DB row, no pillar): create row +
+      // tag via /api/tasks/pin-notion. Use notion_page_id since synthetic
+      // ids are `others:<notion_page_id>` and not addressable as DB rows.
+      const othersCandidatePageIds: string[] = [];
+      for (const t of othersPillar?.tasks ?? []) {
+        if (!t.notion_page_id) continue;
+        if (explicitSprintIndex(t.tags ?? null) != null) continue;
+        if (isSprintCleared(t.tags ?? null)) continue;
+        othersCandidatePageIds.push(t.notion_page_id);
+      }
+
+      const total = dbCandidateIds.length + othersCandidatePageIds.length;
+      if (total === 0) {
         setPinResult("No auto-assigned tasks to pin in this sprint.");
         return;
       }
-      await Promise.all(candidates.map(id => fetch(`/api/tasks/${id}/sprint`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sprintIndex: targetIdx }),
-      })));
-      setPinResult(`Pinned ${candidates.length} task${candidates.length === 1 ? "" : "s"} to Sprint ${targetIdx}.`);
+
+      await Promise.all([
+        ...dbCandidateIds.map(id => fetch(`/api/tasks/${id}/sprint`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sprintIndex: targetIdx }),
+        })),
+        ...othersCandidatePageIds.map(pageId => fetch(`/api/tasks/pin-notion`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ notion_page_id: pageId, sprintIndex: targetIdx }),
+        })),
+      ]);
+
+      const parts: string[] = [];
+      if (dbCandidateIds.length) parts.push(`${dbCandidateIds.length} pillar`);
+      if (othersCandidatePageIds.length) parts.push(`${othersCandidatePageIds.length} Others`);
+      setPinResult(`Pinned ${total} task${total === 1 ? "" : "s"} (${parts.join(" + ")}) to Sprint ${targetIdx}.`);
       router.refresh();
     } catch (err) {
       setPinResult(`Error: ${err instanceof Error ? err.message : "unknown"}`);
