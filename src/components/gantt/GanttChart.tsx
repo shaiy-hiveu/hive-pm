@@ -138,12 +138,12 @@ function buildSprints(count: number): Sprint[] {
 // "sprint:N" tag. Tasks without an explicit tag default to the current
 // sprint (the one whose date range contains today). This way future
 // sprints stay empty unless the user explicitly drops tasks into them.
-function sprintForTask(task: Task, sprints: Sprint[]): Sprint | null {
+function sprintForTask(task: Task, sprints: Sprint[], now: Date = new Date()): Sprint | null {
   // Tasks that were explicitly cleared from a sprint stay hidden (no
   // fallback to current). Truly untagged tasks fall back to current.
   if (isSprintCleared(task.tags ?? null)) return null;
   let idx = explicitSprintIndex(task.tags ?? null);
-  if (idx == null) idx = currentSprintIndex(sprints.length);
+  if (idx == null) idx = currentSprintIndex(sprints.length, now);
   return sprints.find(s => s.index === idx) ?? null;
 }
 
@@ -172,6 +172,13 @@ export default function GanttChart({ pillars }: Props) {
   const [notionPriorityMap, setNotionPriorityMap] = useState<Record<string, string>>({});
   const [sprintMeta, setSprintMeta] = useState<Record<number, { name: string | null; comment: string | null; goals: SprintGoal[] }>>({});
   const [editingMeta, setEditingMeta] = useState<{ idx: number; name: string; comment: string; goals: SprintGoal[] } | null>(null);
+  // DEBUG: override "today" to simulate a different date. Empty string = use real today.
+  const [debugDate, setDebugDate] = useState<string>("");
+  const now = useMemo<Date>(() => {
+    if (!debugDate) return new Date();
+    const d = new Date(debugDate);
+    return Number.isNaN(d.getTime()) ? new Date() : d;
+  }, [debugDate]);
 
   useEffect(() => {
     let cancelled = false;
@@ -387,9 +394,8 @@ export default function GanttChart({ pillars }: Props) {
   const totalWeeks = shownSprints.length * 2;
 
   const currentSprint = useMemo(() => {
-    const today = new Date();
-    return allSprints.find(s => today >= s.start && today < s.end) ?? allSprints[0] ?? null;
-  }, [allSprints]);
+    return allSprints.find(s => now >= s.start && now < s.end) ?? allSprints[0] ?? null;
+  }, [allSprints, now]);
 
   // Build a virtual "Others" pillar from Notion completions during the active sprint
   // window (sprint.start - 2d .. now), only for tasks not yet assigned to a pillar.
@@ -415,7 +421,7 @@ export default function GanttChart({ pillars }: Props) {
           created_at?: string | null; notion_id?: number | null;
         }> = data.tasks ?? [];
         const windowStart = addDays(currentSprint.start, -2);
-        const today = new Date();
+        const today = now;
         const filtered = tasks.filter(t => {
           if (assigned.has(t.id)) return false;
           const s = (t.status ?? "").toLowerCase();
@@ -454,16 +460,16 @@ export default function GanttChart({ pillars }: Props) {
       })
       .catch(() => { /* swallow */ });
     return () => { cancelled = true; };
-  }, [currentSprint, pillars]);
+  }, [currentSprint, pillars, now]);
 
   const allPillars = useMemo<Pillar[]>(() => {
     // Others is current-sprint-only by definition (it shows recent
     // unplanned completions). Hide it entirely if the current sprint
     // isn't visible.
-    const currentIdx = currentSprintIndex(allSprints.length);
+    const currentIdx = currentSprintIndex(allSprints.length, now);
     const includeOthers = othersPillar && visibleSprints.has(currentIdx);
     return includeOthers ? [...pillars, othersPillar!] : pillars;
-  }, [pillars, othersPillar, allSprints.length, visibleSprints]);
+  }, [pillars, othersPillar, allSprints.length, visibleSprints, now]);
 
   // 1) Filter each pillar's tasks to those whose assigned sprint is currently
   //    visible. Tasks without an explicit sprint:N tag fall back to current.
@@ -472,7 +478,7 @@ export default function GanttChart({ pillars }: Props) {
   const displayPillars = useMemo<Pillar[]>(() => {
     return allPillars.map(p => {
       const filtered = (p.tasks ?? []).filter(t => {
-        const sprint = sprintForTask(t, allSprints);
+        const sprint = sprintForTask(t, allSprints, now);
         if (!sprint) return false;
         if (!visibleSprints.has(sprint.index)) return false;
         if (normalized) {
@@ -504,7 +510,7 @@ export default function GanttChart({ pillars }: Props) {
       });
       return { ...p, tasks: sorted };
     });
-  }, [allPillars, allSprints, visibleSprints, normalized, sortBy, notionIdMap]);
+  }, [allPillars, allSprints, visibleSprints, normalized, sortBy, notionIdMap, now]);
 
   // Completion % per sprint (across all pillars' tasks that belong to that sprint)
   const sprintCompletion = useMemo(() => {
@@ -513,7 +519,7 @@ export default function GanttChart({ pillars }: Props) {
       const tasksInSprint: Task[] = [];
       for (const p of displayPillars) {
         for (const t of p.tasks ?? []) {
-          if (sprintForTask(t, allSprints)?.index === s.index) tasksInSprint.push(t);
+          if (sprintForTask(t, allSprints, now)?.index === s.index) tasksInSprint.push(t);
         }
       }
       if (tasksInSprint.length === 0) {
@@ -567,10 +573,10 @@ export default function GanttChart({ pillars }: Props) {
   // sprint when it's visible, otherwise the lowest-index visible sprint.
   const targetSprintIdx = useMemo<number | null>(() => {
     if (visibleSprints.size === 0) return null;
-    const currentIdx = currentSprintIndex(allSprints.length);
+    const currentIdx = currentSprintIndex(allSprints.length, now);
     if (visibleSprints.has(currentIdx)) return currentIdx;
     return Math.min(...Array.from(visibleSprints));
-  }, [visibleSprints, allSprints.length]);
+  }, [visibleSprints, allSprints.length, now]);
 
   const [addPanelOpen, setAddPanelOpen] = useState<Set<string>>(new Set());
   function toggleAddPanel(pillarId: string) {
@@ -581,8 +587,33 @@ export default function GanttChart({ pillars }: Props) {
     });
   }
 
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const debugActive = !!debugDate && debugDate !== todayIso;
+
   return (
     <div className="space-y-4">
+      {/* DEBUG: pretend "today" is a different date so the gantt re-computes
+          current sprint, Others window, and untagged-task fallback. */}
+      <div className={clsx(
+        "flex items-center gap-2 px-3 py-2 rounded-xl border text-xs",
+        debugActive ? "bg-amber-50 border-amber-200 text-amber-800" : "bg-gray-50 border-gray-200 text-gray-600"
+      )}>
+        <span className="font-semibold uppercase tracking-wider text-[10px]">Debug · Today =</span>
+        <input
+          type="date"
+          value={debugDate || todayIso}
+          onChange={e => setDebugDate(e.target.value)}
+          className="text-xs px-2 py-1 rounded border border-gray-200 bg-white focus:outline-none focus:border-indigo-400"
+        />
+        {debugActive && (
+          <button onClick={() => setDebugDate("")}
+            className="text-[11px] text-amber-700 hover:text-amber-900 underline">
+            Reset to real today ({todayIso})
+          </button>
+        )}
+        {debugActive && <span className="text-[10px] opacity-70">⚠️ simulated date — gantt is not in real time</span>}
+      </div>
+
       {/* Sprint selector */}
       <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm">
         <div className="flex items-center justify-between mb-3">
@@ -833,7 +864,7 @@ export default function GanttChart({ pillars }: Props) {
 
                 {isOpen && openTasks.length > 0 && (
                   <div>
-                    {openTasks.map(task => <TaskRow key={task.id} task={task} sprints={shownSprints} allSprintsCount={sprintCount} totalWeeks={totalWeeks} labelWidth={labelWidth} pillarColor={pillar.color} notionIdMap={notionIdMap} onSetSprint={setTaskSprint} onSetProgress={setTaskProgress} isSyntheticOthers={pillar.id === "__others__"} realPillars={pillars} onAssignPillar={assignOthersTask} detailed={detailed} />)}
+                    {openTasks.map(task => <TaskRow key={task.id} task={task} sprints={shownSprints} allSprintsCount={sprintCount} totalWeeks={totalWeeks} labelWidth={labelWidth} pillarColor={pillar.color} notionIdMap={notionIdMap} onSetSprint={setTaskSprint} onSetProgress={setTaskProgress} isSyntheticOthers={pillar.id === "__others__"} realPillars={pillars} onAssignPillar={assignOthersTask} detailed={detailed} now={now} />)}
                   </div>
                 )}
                 {isOpen && openTasks.length === 0 && (
@@ -958,7 +989,7 @@ export default function GanttChart({ pillars }: Props) {
   );
 }
 
-function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pillarColor, notionIdMap, onSetSprint, onSetProgress, isSyntheticOthers, realPillars, onAssignPillar, detailed }: {
+function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pillarColor, notionIdMap, onSetSprint, onSetProgress, isSyntheticOthers, realPillars, onAssignPillar, detailed, now }: {
   task: Task;
   sprints: Sprint[];
   allSprintsCount: number;
@@ -972,9 +1003,10 @@ function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pilla
   realPillars: Pillar[];
   onAssignPillar: (notionPageId: string, pillarId: string | null) => Promise<void>;
   detailed: boolean;
+  now: Date;
 }) {
   const notionId = task.notion_page_id ? notionIdMap[task.notion_page_id] : undefined;
-  const targetSprint = sprintForTask(task, sprints);
+  const targetSprint = sprintForTask(task, sprints, now);
   const created = toDate(task.created_at ?? null);
   const due = toDate(task.due_date ?? null);
   const state = taskState(task);
@@ -998,7 +1030,7 @@ function TaskRow({ task, sprints, allSprintsCount, totalWeeks, labelWidth, pilla
 
   const barColor = pillarColor && pillarColor.startsWith("#") ? pillarColor : "#6366f1";
   const tag = task.tags?.find(t => !t.includes(":"));
-  const taskSprintIdx = explicitSprintIndex(task.tags ?? null) ?? currentSprintIndex(sprints.length);
+  const taskSprintIdx = explicitSprintIndex(task.tags ?? null) ?? currentSprintIndex(sprints.length, now);
 
   return (
     <div

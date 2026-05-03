@@ -37,8 +37,8 @@ export function sprintIndexAt(date: Date, count = 24): number {
   return all[all.length - 1].index;
 }
 
-export function currentSprintIndex(count = 24): number {
-  return sprintIndexAt(new Date(), count);
+export function currentSprintIndex(count = 24, now: Date = new Date()): number {
+  return sprintIndexAt(now, count);
 }
 
 export const SPRINT_TAG_PREFIX = "sprint:";
