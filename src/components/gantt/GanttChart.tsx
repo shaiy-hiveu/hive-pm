@@ -47,6 +47,7 @@ const BASE_DATE = new Date(2026, 3, 19); // 19 April 2026 (month is 0-indexed)
 const SPRINT_DAYS = 14;
 const DEFAULT_SPRINT_COUNT = 4;
 const SPRINT_STORAGE_KEY = "gantt:sprintCount";
+const VISIBLE_SPRINTS_KEY = "gantt:visibleSprints";
 const LABEL_WIDTH_KEY = "gantt:labelWidth";
 const EXPANDED_KEY = "gantt:expandedPillars";
 const NORMALIZED_KEY = "gantt:normalized";
@@ -383,7 +384,20 @@ export default function GanttChart({ pillars, orphanTasks = [] }: Props) {
       const raw = localStorage.getItem(SPRINT_STORAGE_KEY);
       const n = raw ? Math.max(1, parseInt(raw, 10) || DEFAULT_SPRINT_COUNT) : DEFAULT_SPRINT_COUNT;
       setSprintCount(n);
-      setVisibleSprints(new Set(Array.from({ length: n }, (_, i) => i + 1)));
+      const vsRaw = localStorage.getItem(VISIBLE_SPRINTS_KEY);
+      let visible: Set<number> | null = null;
+      if (vsRaw) {
+        try {
+          const arr = JSON.parse(vsRaw);
+          if (Array.isArray(arr)) {
+            const cleaned = arr
+              .map(x => Number(x))
+              .filter(x => Number.isFinite(x) && x >= 1 && x <= n);
+            if (cleaned.length > 0) visible = new Set(cleaned);
+          }
+        } catch { /* fall through */ }
+      }
+      setVisibleSprints(visible ?? new Set(Array.from({ length: n }, (_, i) => i + 1)));
       const wRaw = localStorage.getItem(LABEL_WIDTH_KEY);
       if (wRaw) {
         const w = parseInt(wRaw, 10);
@@ -433,6 +447,13 @@ export default function GanttChart({ pillars, orphanTasks = [] }: Props) {
     if (!hydrated) return;
     try { localStorage.setItem(SPRINT_STORAGE_KEY, String(sprintCount)); } catch { /* noop */ }
   }, [hydrated, sprintCount]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      localStorage.setItem(VISIBLE_SPRINTS_KEY, JSON.stringify(Array.from(visibleSprints).sort((a, b) => a - b)));
+    } catch { /* noop */ }
+  }, [hydrated, visibleSprints]);
 
   useEffect(() => {
     if (!hydrated) return;
