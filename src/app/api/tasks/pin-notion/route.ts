@@ -12,12 +12,38 @@ function mapStatus(s: string | null): "todo" | "in_progress" | "done" | "blocked
   return "todo";
 }
 
+// Ensures a single permanent "Others" pillar exists and returns its id.
+// Used as the catch-all home for tasks pinned from the synthetic Others
+// view — they need a real pillar so they remain visible after pinning.
+async function getOrCreateOthersPillar(db: ReturnType<typeof supabaseAdmin>): Promise<string> {
+  const { data: existing } = await db
+    .from("pillars")
+    .select("id")
+    .eq("name", "Others")
+    .maybeSingle();
+  if (existing?.id) return existing.id as string;
+
+  const { data: created, error } = await db
+    .from("pillars")
+    .insert({
+      name: "Others",
+      description: "Default pillar for tasks not assigned elsewhere",
+      color: "#9ca3af",
+      icon: null,
+      order_index: 999,
+    })
+    .select("id")
+    .single();
+  if (error) throw error;
+  return created!.id as string;
+}
+
 // POST /api/tasks/pin-notion
 //   body: { notion_page_id: string, sprintIndex: number }
 // "Pins" a Notion task to a specific sprint by creating a DB row (or
-// updating its tags) WITHOUT requiring a pillar — used by the Gantt's
-// "Pin auto-assigned" button for Others-pillar tasks that don't have a
-// pillar yet but should still stop migrating across sprints.
+// updating its tags). Used by the Gantt's "Pin auto-assigned" button for
+// Others-pillar tasks. Newly-created rows are placed in a permanent
+// "Others" pillar so they keep showing up in the gantt after pinning.
 export async function POST(req: NextRequest) {
   try {
     const { notion_page_id, sprintIndex } = await req.json();
@@ -47,13 +73,15 @@ export async function POST(req: NextRequest) {
     const t = await fetchNotionTaskByPageId(notion_page_id);
     if (!t) return NextResponse.json({ error: "Task not found in Notion" }, { status: 404 });
 
+    const othersPillarId = await getOrCreateOthersPillar(db);
+
     const tags: string[] = [];
     if (t.type) tags.push(t.type);
     if (t.status && t.status.toLowerCase().includes("approved")) tags.push("notion:approved");
     tags.push(`sprint:${sIdx}`);
 
     const row = {
-      pillar_id: null,
+      pillar_id: othersPillarId,
       title: t.name,
       status: mapStatus(t.status),
       source: "notion" as const,
