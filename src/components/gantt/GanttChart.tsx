@@ -265,6 +265,45 @@ export default function GanttChart({ pillars }: Props) {
     } catch { /* ignore */ }
   }
 
+  // Pins every task currently shown in the *now*-current sprint without an
+  // explicit `sprint:N` tag — i.e., every auto-assigned task — by giving it
+  // an explicit tag. After this, those tasks won't migrate forward when the
+  // calendar (or debug date) advances. Skips Others-pillar synthetic rows
+  // (they aren't real DB rows yet — user must assign them to a pillar first).
+  const [pinningSprint, setPinningSprint] = useState(false);
+  const [pinResult, setPinResult] = useState<string | null>(null);
+  async function pinAutoAssignedToCurrentSprint(): Promise<void> {
+    setPinningSprint(true);
+    setPinResult(null);
+    try {
+      const targetIdx = currentSprintIndex(allSprints.length, now);
+      const candidates: string[] = [];
+      for (const p of pillars) {
+        for (const t of p.tasks ?? []) {
+          if (explicitSprintIndex(t.tags ?? null) != null) continue;
+          if (isSprintCleared(t.tags ?? null)) continue;
+          const resolved = sprintForTask(t, allSprints, now);
+          if (resolved?.index === targetIdx) candidates.push(t.id);
+        }
+      }
+      if (candidates.length === 0) {
+        setPinResult("No auto-assigned tasks to pin in this sprint.");
+        return;
+      }
+      await Promise.all(candidates.map(id => fetch(`/api/tasks/${id}/sprint`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sprintIndex: targetIdx }),
+      })));
+      setPinResult(`Pinned ${candidates.length} task${candidates.length === 1 ? "" : "s"} to Sprint ${targetIdx}.`);
+      router.refresh();
+    } catch (err) {
+      setPinResult(`Error: ${err instanceof Error ? err.message : "unknown"}`);
+    } finally {
+      setPinningSprint(false);
+    }
+  }
+
   async function setTaskProgress(taskId: string, pct: number | null): Promise<void> {
     try {
       await fetch(`/api/tasks/${taskId}/progress`, {
@@ -618,7 +657,17 @@ export default function GanttChart({ pillars }: Props) {
             Reset to real today ({todayIso})
           </button>
         )}
-        {debugActive && <span className="text-[10px] opacity-70">⚠️ simulated date — gantt is not in real time</span>}
+        <span className="mx-1 text-gray-300">|</span>
+        <button
+          onClick={() => void pinAutoAssignedToCurrentSprint()}
+          disabled={pinningSprint}
+          title="Adds an explicit `sprint:N` tag to every auto-assigned task currently shown in the (debug-)current sprint, so they stop migrating forward as today advances."
+          className="inline-flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-md border border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 disabled:opacity-50">
+          {pinningSprint ? <Loader2 size={11} className="animate-spin" /> : <Pencil size={11} />}
+          Pin auto-assigned → Sprint {currentSprintIndex(allSprints.length, now)}
+        </button>
+        {pinResult && <span className="text-[10px] opacity-80">{pinResult}</span>}
+        {debugActive && <span className="text-[10px] opacity-70 ml-auto">⚠️ simulated date — gantt is not in real time</span>}
       </div>
 
       {/* Sprint selector */}
