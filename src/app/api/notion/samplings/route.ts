@@ -44,8 +44,10 @@ export async function GET(req: Request) {
     const rows = (data ?? []) as Array<{ id: string; sampled_at: string; done_tasks: DoneSnapshot[] | null }>;
 
     // We need one extra older sampling beyond the limit to compute newly_done
-    // for the oldest sampling in the page. Fetch its done set separately.
-    let olderDoneIds: Set<string> = new Set();
+    // for the oldest sampling in the page. `null` means no older sampling
+    // exists in the entire DB — this is the absolute first sampling, which
+    // we treat as a baseline (newly_done = []) instead of "everything".
+    let olderDoneIds: Set<string> | null = null;
     if (rows.length > 0) {
       const oldestSampledAt = rows[rows.length - 1].sampled_at;
       const { data: prev } = await db
@@ -55,17 +57,27 @@ export async function GET(req: Request) {
         .order("sampled_at", { ascending: false })
         .limit(1)
         .maybeSingle();
-      const prevDone = (prev?.done_tasks ?? []) as DoneSnapshot[];
-      olderDoneIds = new Set(prevDone.map(t => t.notion_page_id));
+      if (prev) {
+        const prevDone = (prev.done_tasks ?? []) as DoneSnapshot[];
+        olderDoneIds = new Set(prevDone.map(t => t.notion_page_id));
+      }
     }
 
     const items: SamplingItem[] = rows.map((current, i) => {
       const next = rows[i + 1]; // chronologically older within this page
-      const previousIds: Set<string> = next
-        ? new Set((next.done_tasks ?? []).map(t => t.notion_page_id))
-        : olderDoneIds;
       const currentDone = (current.done_tasks ?? []) as DoneSnapshot[];
-      const newlyDone = currentDone.filter(t => !previousIds.has(t.notion_page_id));
+      let newlyDone: DoneSnapshot[];
+      if (next) {
+        const previousIds = new Set((next.done_tasks ?? []).map(t => t.notion_page_id));
+        newlyDone = currentDone.filter(t => !previousIds.has(t.notion_page_id));
+      } else if (olderDoneIds) {
+        const previousIds = olderDoneIds;
+        newlyDone = currentDone.filter(t => !previousIds.has(t.notion_page_id));
+      } else {
+        // Absolute first sampling ever — baseline, no "newly done" by
+        // definition. Avoids the cold-start "everything is new" bias.
+        newlyDone = [];
+      }
       return {
         id: current.id,
         sampled_at: current.sampled_at,

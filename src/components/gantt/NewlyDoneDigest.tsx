@@ -60,15 +60,30 @@ export default function NewlyDoneDigest() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/notion/samplings?limit=50")
-      .then(r => r.json())
-      .then(data => {
-        if (cancelled) return;
-        if (data.error) setError(String(data.error));
-        setItems((data.items ?? []) as SamplingItem[]);
-      })
-      .catch(err => { if (!cancelled) setError(String(err?.message ?? err)); });
-    return () => { cancelled = true; };
+    function load() {
+      fetch("/api/notion/samplings?limit=50")
+        .then(r => r.json())
+        .then(data => {
+          if (cancelled) return;
+          if (data.error) setError(String(data.error));
+          else setError(null);
+          setItems((data.items ?? []) as SamplingItem[]);
+        })
+        .catch(err => { if (!cancelled) setError(String(err?.message ?? err)); });
+    }
+    load();
+    // Re-fetch when a refresh just recorded a new sampling. Reset the
+    // cursor so the user lands on the newest sampling — the one they
+    // just produced — instead of staying on whatever they were browsing.
+    function onRefreshed() {
+      setCursor(0);
+      load();
+    }
+    window.addEventListener("hive:notion-refreshed", onRefreshed);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("hive:notion-refreshed", onRefreshed);
+    };
   }, []);
 
   const active = useMemo(() => items?.[cursor] ?? null, [items, cursor]);

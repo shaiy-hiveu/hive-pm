@@ -25,6 +25,11 @@ export default function RefreshDataButton() {
         localStorage.removeItem("notion:meta-cache");
         localStorage.removeItem("notion:tasks-cache");
       } catch { /* noop */ }
+      // Notify any client-only widgets (e.g. NewlyDoneDigest) that a fresh
+      // sampling has been recorded — they re-fetch on this event.
+      try {
+        window.dispatchEvent(new CustomEvent("hive:notion-refreshed"));
+      } catch { /* noop */ }
       setState("ok");
       router.refresh();
       setTimeout(() => setState("idle"), 2200);
