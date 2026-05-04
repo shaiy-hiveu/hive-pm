@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase";
 import GanttChart from "@/components/gantt/GanttChart";
 import NotionTasksSummary from "@/components/gantt/NotionTasksSummary";
+import NewlyDoneDigest from "@/components/gantt/NewlyDoneDigest";
 import RefreshDataButton from "@/components/RefreshDataButton";
 
 export const dynamic = "force-dynamic";
@@ -25,6 +26,7 @@ export default async function GanttPage() {
         <RefreshDataButton />
       </div>
       <GanttChart pillars={pillars ?? []} orphanTasks={orphanTasks ?? []} />
+      <NewlyDoneDigest />
       <NotionTasksSummary pillars={pillars ?? []} />
     </div>
   );

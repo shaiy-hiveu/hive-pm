@@ -58,6 +58,13 @@ create table if not exists sprint_metadata (
 );
 alter table sprint_metadata add column if not exists goals jsonb not null default '[]'::jsonb;
 
+create table if not exists notion_samplings (
+  id          uuid primary key default uuid_generate_v4(),
+  sampled_at  timestamptz not null default now(),
+  done_tasks  jsonb not null default '[]'::jsonb
+);
+create index if not exists notion_samplings_at_idx on notion_samplings (sampled_at desc);
+
 create table if not exists vision_sections (
   id          uuid primary key default uuid_generate_v4(),
   title       text not null,

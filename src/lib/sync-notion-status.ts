@@ -13,10 +13,26 @@ function mapStatus(s: string | null): "todo" | "in_progress" | "done" | "blocked
 
 export type SyncResult = { updated: number; total: number };
 
+type DoneSnapshot = {
+  notion_page_id: string;
+  notion_id: number | null;
+  name: string;
+  assignee: string | null;
+  status: string | null;
+  product: string | null;
+};
+
+function isDoneNotionStatus(status: string | null): boolean {
+  const s = (status ?? "").toLowerCase();
+  return s.includes("done") || s.includes("complete") || s.includes("approved");
+}
+
 // Pulls fresh Notion data for every DB task that has a notion_page_id and
 // updates only the fields that change frequently in Notion (status, the
 // notion:approved tag, due_date). Title / product / type stay as set at
-// import time.
+// import time. Also records a "sampling" row capturing every Done/Approved
+// task at this point in time, so the gantt page can show what flipped to
+// Done since the previous refresh.
 export async function syncNotionStatus(): Promise<SyncResult> {
   const db = supabaseAdmin();
   const { data: rows, error } = await db
@@ -24,10 +40,34 @@ export async function syncNotionStatus(): Promise<SyncResult> {
     .select("id, notion_page_id, status, tags, due_date")
     .not("notion_page_id", "is", null);
   if (error) throw error;
+
+  const notionTasks = await fetchNotionTasks();
+
+  // Record sampling — a snapshot of every Notion task currently Done /
+  // Complete / Approved. Used by the gantt page's "Newly done" digest.
+  // Failures here are non-fatal: the sync still proceeds.
+  try {
+    const doneSnapshot: DoneSnapshot[] = notionTasks
+      .filter(t => isDoneNotionStatus(t.status))
+      .map(t => ({
+        notion_page_id: t.id,
+        notion_id: t.notion_id ?? null,
+        name: t.name,
+        assignee: t.assignee ?? null,
+        status: t.status ?? null,
+        product: t.product ?? null,
+      }));
+    const { error: sampleErr } = await db
+      .from("notion_samplings")
+      .insert({ done_tasks: doneSnapshot });
+    if (sampleErr) console.warn("notion_samplings insert error:", sampleErr.message);
+  } catch (e: unknown) {
+    console.warn("notion_samplings insert exception:", e instanceof Error ? e.message : e);
+  }
+
   if (!rows || rows.length === 0) return { updated: 0, total: 0 };
 
   const linkedIds = new Set(rows.map(r => r.notion_page_id as string));
-  const notionTasks = await fetchNotionTasks();
   const byId = new Map(notionTasks.filter(t => linkedIds.has(t.id)).map(t => [t.id, t]));
 
   let updated = 0;
