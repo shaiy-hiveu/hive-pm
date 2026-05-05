@@ -1,34 +1,57 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase";
 
-// Daily auto-end-of-work hour. Members are treated as not-working past this
-// time even if they forgot to clock out. Configurable per env if you want
-// to change the cutoff later.
-const AUTO_END_HOUR = 20; // 20:00 local server time
+// Daily reset hour (Asia/Jerusalem). Anyone visiting the work-sessions
+// endpoint at or after this hour triggers a global close of every open
+// session — i.e. "the workday is over". Folks who genuinely work past
+// 19:00 should accept that the next visit collapses everyone, including
+// themselves. Tomorrow they clock in fresh.
+const RESET_HOUR_IL = 19;
 
-// Computes "is this member currently working" without mutating the DB.
-// Returns the active session (or null) — active = started today and either
-// still open or ended_at > now AND current hour < cutoff.
-function effectivelyActive(session: { started_at: string; ended_at: string | null } | null, now: Date): boolean {
-  if (!session) return false;
-  const start = new Date(session.started_at);
-  if (start.toDateString() !== now.toDateString()) return false;
-  if (now.getHours() >= AUTO_END_HOUR) return false;
-  if (session.ended_at) {
-    const end = new Date(session.ended_at);
-    if (end <= now) return false;
-  }
-  return true;
+// Hard ceiling on session duration. If nobody visits after 19:00 (so the
+// soft reset never fires), sessions older than this threshold get closed
+// the next morning — keeps stale "still working since yesterday" rows out
+// of the team view.
+const MAX_OPEN_HOURS = 16;
+
+function israelHour(): number {
+  return parseInt(
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Jerusalem",
+      hour: "2-digit",
+      hour12: false,
+    }).format(new Date()),
+    10
+  );
 }
 
-// GET /api/work-sessions/today
-// Returns: { byMember: { [member_id]: { active: boolean, started_at, ended_at } } }
+// Side-effect: closes open sessions that should no longer be "currently
+// working". Returns nothing — callers re-query afterwards.
+async function autoCloseStaleSessions(db: ReturnType<typeof supabaseAdmin>) {
+  const nowIso = new Date().toISOString();
+  // 1) Anything older than MAX_OPEN_HOURS — forgotten clock-outs.
+  const ceilingIso = new Date(Date.now() - MAX_OPEN_HOURS * 60 * 60 * 1000).toISOString();
+  await db.from("rnd_work_sessions")
+    .update({ ended_at: nowIso })
+    .is("ended_at", null)
+    .lt("started_at", ceilingIso);
+  // 2) After 19:00 Israel time → close every open session (the workday
+  //    bell, ring once, everyone goes home).
+  if (israelHour() >= RESET_HOUR_IL) {
+    await db.from("rnd_work_sessions")
+      .update({ ended_at: nowIso })
+      .is("ended_at", null);
+  }
+}
+
+// GET /api/work-sessions
+// Closes stale sessions first, then returns the current state.
+// Response: { byMember: { [member_id]: { active, started_at, ended_at } } }
 export async function GET() {
   try {
     const db = supabaseAdmin();
-    // Fetch the latest session per member from the past 24 hours. Postgres
-    // doesn't have DISTINCT ON via supabase-js easily, so we just pull recent
-    // and reduce in JS.
+    await autoCloseStaleSessions(db);
+
     const since = new Date();
     since.setHours(since.getHours() - 24);
     const { data, error } = await db
@@ -38,18 +61,22 @@ export async function GET() {
       .order("started_at", { ascending: false });
     if (error) throw error;
 
-    const now = new Date();
-    const byMember: Record<string, { active: boolean; session_id: string | null; started_at: string | null; ended_at: string | null }> = {};
+    const byMember: Record<string, {
+      active: boolean;
+      session_id: string | null;
+      started_at: string | null;
+      ended_at: string | null;
+    }> = {};
     for (const row of data ?? []) {
-      if (byMember[row.member_id]) continue; // keep latest only
+      if (byMember[row.member_id]) continue;
       byMember[row.member_id] = {
-        active: effectivelyActive(row, now),
+        active: row.ended_at == null,
         session_id: row.id,
         started_at: row.started_at,
         ended_at: row.ended_at,
       };
     }
-    return NextResponse.json({ byMember, autoEndHour: AUTO_END_HOUR });
+    return NextResponse.json({ byMember, autoEndHour: RESET_HOUR_IL });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "unknown error";
     return NextResponse.json({ byMember: {}, error: msg }, { status: 500 });
