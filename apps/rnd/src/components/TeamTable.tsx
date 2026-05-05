@@ -33,6 +33,13 @@ function formatAge(ts: number | null): string {
   return `${hr}h ago`;
 }
 
+// Notion `Assigned to` is a free-form people name and doesn't always match
+// the DB member.full_name verbatim. Normalize both sides before lookup so
+// "Shai Yagur" matches "shai yagur" and " Shai  Yagur " etc.
+function normalizeName(s: string | null | undefined): string {
+  return (s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
 type MemberSkill = { skill_id: string; level: number };
 type MemberRepo = { repo_id: string; role: string | null };
 type Member = {
@@ -164,6 +171,32 @@ export default function TeamTable({ members, skills, repos }: {
     return m;
   }, [checks]);
 
+  // Notion-assignee bucket lookup keyed by normalized name. Tolerates
+  // case + spacing differences between Notion's `Assigned to` value and
+  // the DB member.full_name.
+  const tasksByNorm = useMemo(() => {
+    if (!tasks) return null;
+    const m = new Map<string, { active: NotionTask[]; done: NotionTask[] }>();
+    for (const [name, bucket] of Object.entries(tasks)) {
+      m.set(normalizeName(name), bucket);
+    }
+    return m;
+  }, [tasks]);
+
+  // Notion assignees that don't match any active member — diagnostic for
+  // when "task #X assigned to me doesn't show up in my row" turns out to
+  // be a name mismatch between Notion and the member roster.
+  const memberNormNames = useMemo(
+    () => new Set(members.map(m => normalizeName(m.full_name))),
+    [members]
+  );
+  const unknownAssignees = useMemo(() => {
+    if (!tasks) return [] as string[];
+    return Object.keys(tasks)
+      .filter(name => !memberNormNames.has(normalizeName(name)))
+      .sort();
+  }, [tasks, memberNormNames]);
+
   function toggleExpand(memberId: string) {
     setExpanded(prev => {
       const next = new Set(prev);
@@ -173,24 +206,44 @@ export default function TeamTable({ members, skills, repos }: {
     });
   }
 
+  const [actionError, setActionError] = useState<string | null>(null);
+
   async function clockIn(memberId: string) {
     setBusy(`clock-in:${memberId}`);
-    await fetch("/api/work-sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ member_id: memberId }),
-    }).catch(() => {});
-    refreshLocal();
+    setActionError(null);
+    try {
+      const res = await fetch("/api/work-sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ member_id: memberId }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error ?? `HTTP ${res.status}`);
+      }
+    } catch (err) {
+      setActionError(`Clock in failed: ${err instanceof Error ? err.message : "unknown"}`);
+    }
+    await refreshLocal();
     setBusy(null);
   }
   async function clockOut(memberId: string) {
     setBusy(`clock-out:${memberId}`);
-    await fetch("/api/work-sessions", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ member_id: memberId }),
-    }).catch(() => {});
-    refreshLocal();
+    setActionError(null);
+    try {
+      const res = await fetch("/api/work-sessions", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ member_id: memberId }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error ?? `HTTP ${res.status}`);
+      }
+    } catch (err) {
+      setActionError(`Clock out failed: ${err instanceof Error ? err.message : "unknown"}`);
+    }
+    await refreshLocal();
     setBusy(null);
   }
   async function check(memberId: string, t: NotionTask) {
@@ -254,7 +307,30 @@ export default function TeamTable({ members, skills, repos }: {
         {taskError && (
           <span className="text-[11px] text-red-500">Error: {taskError}</span>
         )}
+        {actionError && (
+          <span className="text-[11px] text-red-600 font-medium">{actionError}</span>
+        )}
       </div>
+
+      {/* Unknown assignees — Notion names that don't match any roster member.
+          If your task isn't showing up under your name, the most likely
+          cause is the Notion 'Assigned to' value spelling not matching the
+          member's full_name in the system. */}
+      {unknownAssignees.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-[11px] text-amber-800">
+          <span className="font-semibold">⚠️ Unknown Notion assignees:</span>{" "}
+          {unknownAssignees.map((n, i) => (
+            <span key={n}>
+              <code className="bg-white px-1 py-0.5 rounded border border-amber-200">{n}</code>
+              {i < unknownAssignees.length - 1 ? ", " : ""}
+            </span>
+          ))}
+          <span className="ml-2 text-amber-700">
+            — these names don&apos;t match any member. Update either Notion
+            or the member&apos;s <strong>Full name</strong> in <Link href="/admin" className="underline">/admin</Link>.
+          </span>
+        </div>
+      )}
 
       <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
       <table className="w-full text-sm">
@@ -270,7 +346,7 @@ export default function TeamTable({ members, skills, repos }: {
         </thead>
         <tbody>
           {members.map(m => {
-            const memberTasks = tasks?.[m.full_name];
+            const memberTasks = tasksByNorm?.get(normalizeName(m.full_name));
             const active = memberTasks?.active ?? [];
             const done = memberTasks?.done ?? [];
             const memberChecks = checksByMember.get(m.id) ?? new Set<string>();
