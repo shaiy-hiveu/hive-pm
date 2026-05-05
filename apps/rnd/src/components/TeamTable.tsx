@@ -1,8 +1,37 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import Link from "next/link";
 import clsx from "clsx";
-import { ChevronDown, ChevronRight, ExternalLink, Loader2, CheckCircle2, Circle, Clock, LogIn, LogOut } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Loader2, CheckCircle2, Circle, Clock, LogIn, LogOut, RefreshCw } from "lucide-react";
+
+// Cache wrappers — instant first paint from localStorage, fresh fetch in
+// the background. Manual Refresh button forces a re-fetch and updates the
+// cache so the next visit also shows the latest state.
+const CACHE_TASKS_KEY = "rnd:cache:tasks-by-member";
+const CACHE_CHECKS_KEY = "rnd:cache:task-checks";
+const CACHE_WORK_KEY = "rnd:cache:work-status";
+
+function loadCache<T>(key: string): { ts: number; data: T } | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
+}
+function saveCache(key: string, data: unknown) {
+  if (typeof window === "undefined") return;
+  try { localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data })); } catch { /* noop */ }
+}
+function formatAge(ts: number | null): string {
+  if (ts == null) return "never";
+  const sec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  return `${hr}h ago`;
+}
 
 type MemberSkill = { skill_id: string; level: number };
 type MemberRepo = { repo_id: string; role: string | null };
@@ -54,26 +83,73 @@ export default function TeamTable({ members, skills, repos }: {
   const [taskError, setTaskError] = useState<string | null>(null);
   const [checks, setChecks] = useState<TaskCheck[]>([]);
   const [workStatus, setWorkStatus] = useState<Record<string, WorkStatus>>({});
-  const [autoEndHour, setAutoEndHour] = useState(20);
+  const [autoEndHour, setAutoEndHour] = useState(19);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [cacheTs, setCacheTs] = useState<number | null>(null);
 
-  function loadAll() {
-    fetch("/api/notion-tasks-by-member")
-      .then(r => r.json())
-      .then(d => {
-        if (d.error) setTaskError(String(d.error));
-        setTasks(d.byAssignee ?? {});
-      })
-      .catch(err => setTaskError(String(err?.message ?? err)));
-    fetch("/api/task-checks").then(r => r.json()).then(d => setChecks(d.items ?? []));
-    fetch("/api/work-sessions").then(r => r.json()).then(d => {
-      setWorkStatus(d.byMember ?? {});
-      if (d.autoEndHour) setAutoEndHour(d.autoEndHour);
-    });
-  }
+  // Hydrate from localStorage so the dashboard paints immediately, no
+  // multi-second wait while the (slow) Notion API call is in flight.
+  // Then fetch fresh in the background.
+  useEffect(() => {
+    const t = loadCache<ByAssignee>(CACHE_TASKS_KEY);
+    const c = loadCache<TaskCheck[]>(CACHE_CHECKS_KEY);
+    const w = loadCache<{ byMember: Record<string, WorkStatus>; autoEndHour: number }>(CACHE_WORK_KEY);
+    if (t) { setTasks(t.data); setCacheTs(t.ts); }
+    if (c) setChecks(c.data);
+    if (w) {
+      setWorkStatus(w.data.byMember ?? {});
+      if (w.data.autoEndHour) setAutoEndHour(w.data.autoEndHour);
+    }
+    void refresh(false);
+  }, []);
 
-  useEffect(() => { loadAll(); }, []);
+  // refresh(showSpinner) — re-fetches all three endpoints, updates cache,
+  // and sets the visible "refreshing" spinner only when the user asked
+  // for it explicitly (not on background hydrate fetch).
+  const refresh = useCallback(async (showSpinner: boolean) => {
+    if (showSpinner) setRefreshing(true);
+    try {
+      const [tRes, cRes, wRes] = await Promise.all([
+        fetch("/api/notion-tasks-by-member").then(r => r.json()).catch(err => ({ error: String(err?.message ?? err) })),
+        fetch("/api/task-checks").then(r => r.json()).catch(() => ({ items: [] })),
+        fetch("/api/work-sessions").then(r => r.json()).catch(() => ({ byMember: {} })),
+      ]);
+      if (tRes?.error) setTaskError(String(tRes.error));
+      else setTaskError(null);
+      const tasksData = tRes?.byAssignee ?? {};
+      const checksData = cRes?.items ?? [];
+      const workData = { byMember: wRes?.byMember ?? {}, autoEndHour: wRes?.autoEndHour ?? 19 };
+      setTasks(tasksData);
+      setChecks(checksData);
+      setWorkStatus(workData.byMember);
+      if (workData.autoEndHour) setAutoEndHour(workData.autoEndHour);
+      saveCache(CACHE_TASKS_KEY, tasksData);
+      saveCache(CACHE_CHECKS_KEY, checksData);
+      saveCache(CACHE_WORK_KEY, workData);
+      setCacheTs(Date.now());
+    } finally {
+      if (showSpinner) setRefreshing(false);
+    }
+  }, []);
+
+  // Quick re-fetch of just task-checks + work-status — used after any
+  // mutation (clock in/out, check/uncheck) so the UI reflects the change
+  // without a full Notion re-fetch.
+  const refreshLocal = useCallback(async () => {
+    const [cRes, wRes] = await Promise.all([
+      fetch("/api/task-checks").then(r => r.json()).catch(() => ({ items: [] })),
+      fetch("/api/work-sessions").then(r => r.json()).catch(() => ({ byMember: {} })),
+    ]);
+    const checksData = cRes?.items ?? [];
+    const workData = { byMember: wRes?.byMember ?? {}, autoEndHour: wRes?.autoEndHour ?? 19 };
+    setChecks(checksData);
+    setWorkStatus(workData.byMember);
+    if (workData.autoEndHour) setAutoEndHour(workData.autoEndHour);
+    saveCache(CACHE_CHECKS_KEY, checksData);
+    saveCache(CACHE_WORK_KEY, workData);
+  }, []);
 
   const skillById = useMemo(() => new Map(skills.map(s => [s.id, s])), [skills]);
   const repoById = useMemo(() => new Map(repos.map(r => [r.id, r])), [repos]);
@@ -104,7 +180,7 @@ export default function TeamTable({ members, skills, repos }: {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ member_id: memberId }),
     }).catch(() => {});
-    loadAll();
+    refreshLocal();
     setBusy(null);
   }
   async function clockOut(memberId: string) {
@@ -114,7 +190,7 @@ export default function TeamTable({ members, skills, repos }: {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ member_id: memberId }),
     }).catch(() => {});
-    loadAll();
+    refreshLocal();
     setBusy(null);
   }
   async function check(memberId: string, t: NotionTask) {
@@ -129,7 +205,7 @@ export default function TeamTable({ members, skills, repos }: {
         notion_name: t.name,
       }),
     }).catch(() => {});
-    loadAll();
+    refreshLocal();
     setBusy(null);
   }
   async function uncheck(memberId: string, pageId: string) {
@@ -137,7 +213,7 @@ export default function TeamTable({ members, skills, repos }: {
     await fetch(`/api/task-checks?member_id=${memberId}&notion_page_id=${encodeURIComponent(pageId)}`, {
       method: "DELETE",
     }).catch(() => {});
-    loadAll();
+    refreshLocal();
     setBusy(null);
   }
 
@@ -153,7 +229,34 @@ export default function TeamTable({ members, skills, repos }: {
   }
 
   return (
-    <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
+    <div className="space-y-3">
+      {/* Refresh toolbar — instant page load from cache, manual refresh
+          re-fetches Notion (slow) and updates the cache for next time. */}
+      <div className="flex items-center gap-3 text-xs text-gray-500">
+        <button onClick={() => void refresh(true)}
+          disabled={refreshing}
+          className={clsx(
+            "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border transition-colors",
+            refreshing
+              ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+              : "border-gray-200 bg-white text-gray-700 hover:border-gray-400 hover:bg-gray-50"
+          )}>
+          {refreshing
+            ? <Loader2 size={13} className="animate-spin" />
+            : <RefreshCw size={13} />}
+          {refreshing ? "Refreshing…" : "Refresh"}
+        </button>
+        {cacheTs != null && (
+          <span className="text-[11px] text-gray-400">
+            Last updated: {formatAge(cacheTs)}
+          </span>
+        )}
+        {taskError && (
+          <span className="text-[11px] text-red-500">Error: {taskError}</span>
+        )}
+      </div>
+
+      <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-sm">
       <table className="w-full text-sm">
         <thead className="bg-gray-50 text-xs font-semibold text-gray-500 uppercase tracking-wider">
           <tr>
@@ -394,6 +497,7 @@ export default function TeamTable({ members, skills, repos }: {
           })}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }

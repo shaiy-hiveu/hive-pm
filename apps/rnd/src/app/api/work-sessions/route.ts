@@ -25,6 +25,11 @@ function israelHour(): number {
   );
 }
 
+// One-minute grace so a brand-new clock-in (POST then immediate GET)
+// survives the same-request auto-close — relevant when the user clocks in
+// after 19:00 Israel time.
+const GRACE_MS = 60 * 1000;
+
 // Side-effect: closes open sessions that should no longer be "currently
 // working". Returns nothing — callers re-query afterwards.
 async function autoCloseStaleSessions(db: ReturnType<typeof supabaseAdmin>) {
@@ -35,12 +40,15 @@ async function autoCloseStaleSessions(db: ReturnType<typeof supabaseAdmin>) {
     .update({ ended_at: nowIso })
     .is("ended_at", null)
     .lt("started_at", ceilingIso);
-  // 2) After 19:00 Israel time → close every open session (the workday
-  //    bell, ring once, everyone goes home).
+  // 2) After 19:00 Israel time → close every open session older than the
+  //    grace period. Sessions started in the last GRACE_MS stay open so
+  //    intentional late clock-ins register at least briefly.
   if (israelHour() >= RESET_HOUR_IL) {
+    const graceCutoffIso = new Date(Date.now() - GRACE_MS).toISOString();
     await db.from("rnd_work_sessions")
       .update({ ended_at: nowIso })
-      .is("ended_at", null);
+      .is("ended_at", null)
+      .lt("started_at", graceCutoffIso);
   }
 }
 
