@@ -9,6 +9,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const allowed = [
       "handle", "full_name", "email", "role", "slack_user_id",
       "photo_url", "active", "is_admin", "joined_at", "notes",
+      "notion_assignee_name",
     ] as const;
     const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
     for (const k of allowed) {

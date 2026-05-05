@@ -11,6 +11,7 @@ type Member = {
   id: string;
   handle: string;
   full_name: string;
+  notion_assignee_name?: string | null;
   email: string;
   role: string | null;
   slack_user_id: string | null;
@@ -76,10 +77,11 @@ export default function MemberDetail({ member, skills, categories, repos }: {
     fetch("/api/notion-tasks-by-member")
       .then(r => r.json())
       .then(data => {
-        // Tolerate case/whitespace differences between Notion `Assigned to`
-        // and member.full_name — the most common source of "my task isn't
-        // showing up" complaints.
-        const wantedNorm = (member.full_name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+        // Tolerate case/whitespace differences. Prefer the explicit
+        // notion_assignee_name override (used when Notion shows e.g. "Max"
+        // or an email instead of the human-readable full name).
+        const wantedRaw = member.notion_assignee_name || member.full_name;
+        const wantedNorm = (wantedRaw ?? "").trim().toLowerCase().replace(/\s+/g, " ");
         let bucket: { active: NotionTask[]; done: NotionTask[] } | undefined;
         for (const [name, b] of Object.entries(data.byAssignee ?? {})) {
           const norm = name.trim().toLowerCase().replace(/\s+/g, " ");

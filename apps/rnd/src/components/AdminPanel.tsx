@@ -7,6 +7,7 @@ import { Loader2, Plus, Trash2 } from "lucide-react";
 type Member = {
   id: string; handle: string; full_name: string; email: string;
   role: string | null; slack_user_id: string | null; is_admin: boolean; active: boolean;
+  notion_assignee_name: string | null;
 };
 type SkillCategory = { id: string; name: string; order_index: number; color: string | null };
 type Skill = {
@@ -55,7 +56,8 @@ function MembersTab({ members }: { members: Member[] }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState({
-    handle: "", full_name: "", email: "", role: "", slack_user_id: "", is_admin: false,
+    handle: "", full_name: "", email: "", role: "", slack_user_id: "",
+    notion_assignee_name: "", is_admin: false,
   });
 
   async function add() {
@@ -67,7 +69,7 @@ function MembersTab({ members }: { members: Member[] }) {
         body: JSON.stringify(form),
       });
       if (!res.ok) throw new Error((await res.json())?.error ?? "Failed");
-      setForm({ handle: "", full_name: "", email: "", role: "", slack_user_id: "", is_admin: false });
+      setForm({ handle: "", full_name: "", email: "", role: "", slack_user_id: "", notion_assignee_name: "", is_admin: false });
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "unknown");
@@ -104,6 +106,11 @@ function MembersTab({ members }: { members: Member[] }) {
           <input placeholder="Slack user id (U…)" value={form.slack_user_id}
             onChange={e => setForm({ ...form, slack_user_id: e.target.value })}
             className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-indigo-400" />
+          <input placeholder="Notion assignee name (if different from Full name)"
+            value={form.notion_assignee_name}
+            onChange={e => setForm({ ...form, notion_assignee_name: e.target.value })}
+            title="Use this when Notion's 'Assigned to' value is different from the member's display name (e.g. 'Max' or 'shai_y@hiveurban.com')"
+            className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-indigo-400" />
           <label className="flex items-center gap-2 text-sm text-gray-600">
             <input type="checkbox" checked={form.is_admin}
               onChange={e => setForm({ ...form, is_admin: e.target.checked })}
@@ -127,6 +134,7 @@ function MembersTab({ members }: { members: Member[] }) {
             <tr>
               <th className="px-4 py-2 text-left">Handle</th>
               <th className="px-4 py-2 text-left">Full name</th>
+              <th className="px-4 py-2 text-left">Notion assignee</th>
               <th className="px-4 py-2 text-left">Email</th>
               <th className="px-4 py-2 text-left">Role</th>
               <th className="px-4 py-2 text-left">Slack</th>
@@ -135,27 +143,72 @@ function MembersTab({ members }: { members: Member[] }) {
           </thead>
           <tbody>
             {members.length === 0 && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400 text-sm">No members yet.</td></tr>
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400 text-sm">No members yet.</td></tr>
             )}
             {members.map(m => (
-              <tr key={m.id} className="border-t border-gray-100">
-                <td className="px-4 py-2 font-medium text-gray-900">@{m.handle}</td>
-                <td className="px-4 py-2 text-gray-700">{m.full_name}</td>
-                <td className="px-4 py-2 text-gray-500 text-xs">{m.email}</td>
-                <td className="px-4 py-2 text-gray-700">{m.role}</td>
-                <td className="px-4 py-2 text-gray-500 text-xs font-mono">{m.slack_user_id ?? "—"}</td>
-                <td className="px-4 py-2 text-right">
-                  <button onClick={() => remove(m.id)} disabled={busy}
-                    className="text-gray-300 hover:text-red-600 disabled:opacity-50">
-                    <Trash2 size={13} />
-                  </button>
-                </td>
-              </tr>
+              <MemberRowEditable key={m.id} member={m} busy={busy} onRemove={remove} />
             ))}
           </tbody>
         </table>
       </section>
     </div>
+  );
+}
+
+function MemberRowEditable({ member, busy, onRemove }: {
+  member: Member;
+  busy: boolean;
+  onRemove: (id: string) => void | Promise<void>;
+}) {
+  const router = useRouter();
+  const [fullName, setFullName] = useState(member.full_name);
+  const [notionName, setNotionName] = useState(member.notion_assignee_name ?? "");
+  const [saving, setSaving] = useState<"full_name" | "notion_assignee_name" | null>(null);
+
+  async function patch(field: "full_name" | "notion_assignee_name", value: string) {
+    setSaving(field);
+    try {
+      await fetch(`/api/members/${member.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [field]: field === "notion_assignee_name" ? (value || null) : value }),
+      });
+      router.refresh();
+    } finally { setSaving(null); }
+  }
+
+  return (
+    <tr className="border-t border-gray-100">
+      <td className="px-4 py-2 font-medium text-gray-900">@{member.handle}</td>
+      <td className="px-4 py-2 text-gray-700">
+        <input
+          value={fullName}
+          onChange={e => setFullName(e.target.value)}
+          onBlur={() => fullName !== member.full_name && patch("full_name", fullName)}
+          className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:border-indigo-400 focus:bg-white rounded px-1 py-0.5 text-sm focus:outline-none"
+        />
+        {saving === "full_name" && <Loader2 size={10} className="inline animate-spin text-gray-400" />}
+      </td>
+      <td className="px-4 py-2 text-gray-500">
+        <input
+          value={notionName}
+          onChange={e => setNotionName(e.target.value)}
+          onBlur={() => notionName !== (member.notion_assignee_name ?? "") && patch("notion_assignee_name", notionName)}
+          placeholder="(uses Full name)"
+          className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:border-indigo-400 focus:bg-white rounded px-1 py-0.5 text-xs focus:outline-none"
+        />
+        {saving === "notion_assignee_name" && <Loader2 size={10} className="inline animate-spin text-gray-400" />}
+      </td>
+      <td className="px-4 py-2 text-gray-500 text-xs">{member.email}</td>
+      <td className="px-4 py-2 text-gray-700">{member.role}</td>
+      <td className="px-4 py-2 text-gray-500 text-xs font-mono">{member.slack_user_id ?? "—"}</td>
+      <td className="px-4 py-2 text-right">
+        <button onClick={() => onRemove(member.id)} disabled={busy}
+          className="text-gray-300 hover:text-red-600 disabled:opacity-50">
+          <Trash2 size={13} />
+        </button>
+      </td>
+    </tr>
   );
 }
 

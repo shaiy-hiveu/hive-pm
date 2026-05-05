@@ -46,6 +46,7 @@ type Member = {
   id: string;
   handle: string;
   full_name: string;
+  notion_assignee_name?: string | null;
   email: string;
   role: string | null;
   active: boolean;
@@ -183,11 +184,16 @@ export default function TeamTable({ members, skills, repos }: {
     return m;
   }, [tasks]);
 
+  // Resolve the name to use against Notion's `Assigned to` for each
+  // member: prefer the explicit notion_assignee_name override, fall back
+  // to full_name if not set.
+  const matchNameOf = (m: Member) => normalizeName(m.notion_assignee_name || m.full_name);
+
   // Notion assignees that don't match any active member — diagnostic for
   // when "task #X assigned to me doesn't show up in my row" turns out to
   // be a name mismatch between Notion and the member roster.
   const memberNormNames = useMemo(
-    () => new Set(members.map(m => normalizeName(m.full_name))),
+    () => new Set(members.map(matchNameOf)),
     [members]
   );
   const unknownAssignees = useMemo(() => {
@@ -346,7 +352,7 @@ export default function TeamTable({ members, skills, repos }: {
         </thead>
         <tbody>
           {members.map(m => {
-            const memberTasks = tasksByNorm?.get(normalizeName(m.full_name));
+            const memberTasks = tasksByNorm?.get(matchNameOf(m));
             const active = memberTasks?.active ?? [];
             const done = memberTasks?.done ?? [];
             const memberChecks = checksByMember.get(m.id) ?? new Set<string>();
@@ -469,12 +475,19 @@ export default function TeamTable({ members, skills, repos }: {
                         Out · {formatStamp(status?.started_at ?? null)}
                       </button>
                     ) : (
-                      <button onClick={() => clockIn(m.id)} disabled={busy?.startsWith("clock-in:" + m.id)}
-                        title={status?.started_at ? `Last seen ${formatStamp(status.started_at)}` : "Not clocked in today"}
-                        className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-gray-200 text-gray-600 hover:border-emerald-400 hover:text-emerald-700 disabled:opacity-50">
-                        {busy === `clock-in:${m.id}` ? <Loader2 size={10} className="animate-spin" /> : <LogIn size={10} />}
-                        Clock in
-                      </button>
+                      <div className="inline-flex flex-col items-end gap-0.5">
+                        <button onClick={() => clockIn(m.id)} disabled={busy?.startsWith("clock-in:" + m.id)}
+                          title={status?.started_at ? `Last session started at ${formatStamp(status.started_at)} and was closed${status?.ended_at ? ` at ${formatStamp(status.ended_at)}` : ""}` : "Not clocked in today"}
+                          className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-gray-200 text-gray-600 hover:border-emerald-400 hover:text-emerald-700 disabled:opacity-50">
+                          {busy === `clock-in:${m.id}` ? <Loader2 size={10} className="animate-spin" /> : <LogIn size={10} />}
+                          Clock in
+                        </button>
+                        {status?.started_at && (
+                          <span className="text-[9px] text-gray-400 italic">
+                            last: {formatStamp(status.started_at)}{status.ended_at && ` → ${formatStamp(status.ended_at)}`}
+                          </span>
+                        )}
+                      </div>
                     )}
                   </td>
                 </tr>

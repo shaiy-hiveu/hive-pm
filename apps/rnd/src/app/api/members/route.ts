@@ -27,7 +27,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { handle, full_name, email, role, slack_user_id, photo_url, joined_at, notes, is_admin } = body ?? {};
+    const { handle, full_name, email, role, slack_user_id, photo_url, joined_at, notes, is_admin, notion_assignee_name } = body ?? {};
     if (!handle || !full_name || !email) {
       return NextResponse.json({ error: "handle, full_name, email required" }, { status: 400 });
     }
@@ -44,6 +44,7 @@ export async function POST(req: NextRequest) {
         joined_at: joined_at ?? null,
         notes: notes ?? null,
         is_admin: !!is_admin,
+        notion_assignee_name: notion_assignee_name ? String(notion_assignee_name).trim() : null,
       })
       .select()
       .single();
