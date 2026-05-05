@@ -76,7 +76,15 @@ export default function MemberDetail({ member, skills, categories, repos }: {
     fetch("/api/notion-tasks-by-member")
       .then(r => r.json())
       .then(data => {
-        const bucket = data.byAssignee?.[member.full_name];
+        // Tolerate case/whitespace differences between Notion `Assigned to`
+        // and member.full_name — the most common source of "my task isn't
+        // showing up" complaints.
+        const wantedNorm = (member.full_name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+        let bucket: { active: NotionTask[]; done: NotionTask[] } | undefined;
+        for (const [name, b] of Object.entries(data.byAssignee ?? {})) {
+          const norm = name.trim().toLowerCase().replace(/\s+/g, " ");
+          if (norm === wantedNorm) { bucket = b as typeof bucket; break; }
+        }
         setTasks(bucket ?? { active: [], done: [] });
       })
       .catch(() => setTasks({ active: [], done: [] }));
