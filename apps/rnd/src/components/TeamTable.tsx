@@ -463,12 +463,14 @@ export default function TeamTable({ members, skills, repos }: {
                   <td className="px-3 py-3 align-top text-right whitespace-nowrap">
                     {isWorking ? (
                       <button onClick={() => clockOut(m.id)} disabled={busy?.startsWith("clock-out:" + m.id)}
+                        title={status?.started_at ? `Clocked in at ${formatStamp(status.started_at)}` : "Clocked in"}
                         className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50">
                         {busy === `clock-out:${m.id}` ? <Loader2 size={10} className="animate-spin" /> : <LogOut size={10} />}
-                        Clock out
+                        Out · {formatStamp(status?.started_at ?? null)}
                       </button>
                     ) : (
                       <button onClick={() => clockIn(m.id)} disabled={busy?.startsWith("clock-in:" + m.id)}
+                        title={status?.started_at ? `Last seen ${formatStamp(status.started_at)}` : "Not clocked in today"}
                         className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded border border-gray-200 text-gray-600 hover:border-emerald-400 hover:text-emerald-700 disabled:opacity-50">
                         {busy === `clock-in:${m.id}` ? <Loader2 size={10} className="animate-spin" /> : <LogIn size={10} />}
                         Clock in
