@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import clsx from "clsx";
-import { ArrowLeft, ExternalLink, Loader2, Save, CheckCircle2, Circle, LogIn, LogOut, Clock } from "lucide-react";
+import { ArrowLeft, ExternalLink, Loader2, Save, CheckCircle2, Circle, LogIn, LogOut, Clock, TrendingUp, Plus, Minus, ArrowUpRight, ArrowDownRight, FolderPlus, FolderMinus } from "lucide-react";
 
 type MemberSkill = { skill_id: string; level: number; notes: string | null };
 type MemberRepo = { repo_id: string; role: string | null; started_at: string | null; ended_at: string | null };
@@ -33,6 +33,17 @@ type NotionTask = {
   name: string;
   status: string | null;
   product: string | null;
+};
+
+type MemberEvent = {
+  id: string;
+  event_type: "skill_added" | "skill_removed" | "skill_level_change" | "repo_added" | "repo_removed" | "snapshot";
+  level_before: number | null;
+  level_after: number | null;
+  occurred_at: string;
+  source: string | null;
+  skill: { id: string; name: string } | null;
+  repo: { id: string; name: string; slug: string; color: string | null } | null;
 };
 
 const LEVELS: Array<0 | 1 | 2 | 3 | 4 | 5> = [0, 1, 2, 3, 4, 5];
@@ -72,6 +83,7 @@ export default function MemberDetail({ member, skills, categories, repos }: {
   const [autoEndHour, setAutoEndHour] = useState(20);
   const [taskBusyId, setTaskBusyId] = useState<string | null>(null);
   const [clockBusy, setClockBusy] = useState(false);
+  const [events, setEvents] = useState<MemberEvent[] | null>(null);
 
   const loadStatus = useCallback(() => {
     fetch("/api/notion-tasks-by-member")
@@ -104,6 +116,10 @@ export default function MemberDetail({ member, skills, categories, repos }: {
         setWorkStartedAt(status?.started_at ?? null);
         if (data.autoEndHour) setAutoEndHour(data.autoEndHour);
       });
+    fetch(`/api/member-events?member_id=${member.id}&limit=200`)
+      .then(r => r.json())
+      .then(data => setEvents(data.items ?? []))
+      .catch(() => setEvents([]));
   }, [member.full_name, member.id]);
 
   useEffect(() => { loadStatus(); }, [loadStatus]);
@@ -218,6 +234,11 @@ export default function MemberDetail({ member, skills, categories, repos }: {
       });
       setSaved("Saved.");
       router.refresh();
+      // Refresh the timeline so new events appear immediately.
+      fetch(`/api/member-events?member_id=${member.id}&limit=200`)
+        .then(r => r.json())
+        .then(data => setEvents(data.items ?? []))
+        .catch(() => {});
       setTimeout(() => setSaved(null), 2200);
     } catch (err) {
       setSaved("Error: " + (err instanceof Error ? err.message : "unknown"));
@@ -438,8 +459,126 @@ export default function MemberDetail({ member, skills, categories, repos }: {
           })}
         </div>
       </section>
+
+      {/* Timeline — professional development history */}
+      <section className="bg-white border border-gray-200 rounded-2xl p-6 mb-6 shadow-sm">
+        <div className="flex items-center gap-2 mb-1">
+          <TrendingUp size={16} className="text-indigo-500" />
+          <h2 className="text-base font-semibold text-gray-900">Progress timeline</h2>
+        </div>
+        <p className="text-xs text-gray-500 mb-4">
+          Every skill added/removed, every level change, every repo joined or left — newest first.
+        </p>
+        <Timeline events={events} />
+      </section>
     </div>
   );
+}
+
+function Timeline({ events }: { events: MemberEvent[] | null }) {
+  if (events === null) {
+    return <p className="text-xs text-gray-400 inline-flex items-center gap-1.5"><Loader2 size={11} className="animate-spin" /> loading…</p>;
+  }
+  if (events.length === 0) {
+    return <p className="text-xs text-gray-400 italic">No history yet — change a skill level or join a repo to start the timeline.</p>;
+  }
+
+  // Group events by calendar day (Asia/Jerusalem) for a cleaner read.
+  const groups = new Map<string, MemberEvent[]>();
+  for (const ev of events) {
+    const dayKey = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jerusalem" }).format(new Date(ev.occurred_at));
+    if (!groups.has(dayKey)) groups.set(dayKey, []);
+    groups.get(dayKey)!.push(ev);
+  }
+
+  return (
+    <ol className="space-y-5">
+      {[...groups.entries()].map(([day, dayEvents]) => (
+        <li key={day}>
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-gray-500 mb-1.5">
+            {formatDay(day)}
+          </p>
+          <ul className="space-y-1.5 border-l border-gray-200 pl-4 ml-1">
+            {dayEvents.map(ev => <TimelineRow key={ev.id} event={ev} />)}
+          </ul>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function TimelineRow({ event }: { event: MemberEvent }) {
+  const time = formatHM(event.occurred_at);
+  switch (event.event_type) {
+    case "skill_added": return (
+      <li className="flex items-center gap-2 text-[12px] text-gray-700">
+        <Plus size={11} className="text-emerald-500 shrink-0" />
+        <span className="flex-1">
+          Added skill <strong>{event.skill?.name ?? "—"}</strong>
+          {event.level_after != null && <span className="text-gray-500"> at level {event.level_after}</span>}
+        </span>
+        <span className="text-[10px] text-gray-400 tabular-nums">{time}</span>
+      </li>
+    );
+    case "skill_removed": return (
+      <li className="flex items-center gap-2 text-[12px] text-gray-700">
+        <Minus size={11} className="text-rose-500 shrink-0" />
+        <span className="flex-1">
+          Removed skill <strong>{event.skill?.name ?? "—"}</strong>
+          {event.level_before != null && <span className="text-gray-400"> (was level {event.level_before})</span>}
+        </span>
+        <span className="text-[10px] text-gray-400 tabular-nums">{time}</span>
+      </li>
+    );
+    case "skill_level_change": {
+      const up = (event.level_after ?? 0) > (event.level_before ?? 0);
+      const Arrow = up ? ArrowUpRight : ArrowDownRight;
+      return (
+        <li className="flex items-center gap-2 text-[12px] text-gray-700">
+          <Arrow size={11} className={up ? "text-emerald-500 shrink-0" : "text-amber-500 shrink-0"} />
+          <span className="flex-1">
+            <strong>{event.skill?.name ?? "—"}</strong> went from level <span className="tabular-nums">{event.level_before}</span> → <span className="tabular-nums font-semibold text-gray-900">{event.level_after}</span>
+          </span>
+          <span className="text-[10px] text-gray-400 tabular-nums">{time}</span>
+        </li>
+      );
+    }
+    case "repo_added": return (
+      <li className="flex items-center gap-2 text-[12px] text-gray-700">
+        <FolderPlus size={11} className="text-indigo-500 shrink-0" />
+        <span className="flex-1 inline-flex items-center gap-1.5">
+          Joined repo
+          {event.repo?.color && (
+            <span className="w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: event.repo.color }} />
+          )}
+          <strong>{event.repo?.name ?? "—"}</strong>
+        </span>
+        <span className="text-[10px] text-gray-400 tabular-nums">{time}</span>
+      </li>
+    );
+    case "repo_removed": return (
+      <li className="flex items-center gap-2 text-[12px] text-gray-500">
+        <FolderMinus size={11} className="text-rose-500 shrink-0" />
+        <span className="flex-1 inline-flex items-center gap-1.5">
+          Left repo
+          {event.repo?.color && (
+            <span className="w-2 h-2 rounded-sm shrink-0 opacity-60" style={{ backgroundColor: event.repo.color }} />
+          )}
+          <strong>{event.repo?.name ?? "—"}</strong>
+        </span>
+        <span className="text-[10px] text-gray-400 tabular-nums">{time}</span>
+      </li>
+    );
+    default: return null;
+  }
+}
+
+function formatDay(yyyymmdd: string): string {
+  // yyyy-mm-dd → "Tue 5 May 2026"
+  try {
+    const d = new Date(`${yyyymmdd}T12:00:00Z`);
+    return new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" }).format(d);
+  } catch { return yyyymmdd; }
 }
 
 function formatHM(iso: string | null): string {
