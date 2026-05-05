@@ -6,6 +6,20 @@ import { supabaseAdmin } from "@/lib/supabase";
 // forgets to clock out, they stay green until they click out. We can
 // add smarter logic later — for now correctness beats cleverness.
 
+// Supabase returns errors as plain objects (PostgrestError) — not Error
+// instances — so `err.message` is missing on `err instanceof Error`. This
+// helper extracts a readable string from anything we might catch.
+function describeError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === "object") {
+    const e = err as { message?: string; details?: string; hint?: string; code?: string };
+    const parts = [e.message, e.details, e.hint, e.code ? `(code ${e.code})` : null].filter(Boolean);
+    if (parts.length > 0) return parts.join(" · ");
+    try { return JSON.stringify(err); } catch { /* noop */ }
+  }
+  return "unknown error";
+}
+
 // GET /api/work-sessions
 // Latest session per member from the last 30 days. active = ended_at IS NULL.
 export async function GET() {
@@ -37,7 +51,8 @@ export async function GET() {
     }
     return NextResponse.json({ byMember });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "unknown error";
+    const msg = describeError(err);
+    console.error("work-sessions GET error:", err);
     return NextResponse.json({ byMember: {}, error: msg }, { status: 500 });
   }
 }
@@ -63,7 +78,8 @@ export async function POST(req: NextRequest) {
     if (error) throw error;
     return NextResponse.json({ ok: true, session: data });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "unknown error";
+    const msg = describeError(err);
+    console.error("work-sessions POST error:", err);
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
@@ -84,7 +100,8 @@ export async function PATCH(req: NextRequest) {
     if (error) throw error;
     return NextResponse.json({ ok: true });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "unknown error";
+    const msg = describeError(err);
+    console.error("work-sessions PATCH error:", err);
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
