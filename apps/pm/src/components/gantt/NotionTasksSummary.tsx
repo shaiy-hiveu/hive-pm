@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
-import { ChevronDown, ChevronRight, ExternalLink, Flame, Rocket, Loader2, Check } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, Flame, Rocket, Loader2, Check, AlertOctagon } from "lucide-react";
 import clsx from "clsx";
 import { explicitSprintIndex, currentSprintIndex } from "@/lib/sprints";
 
@@ -118,6 +118,44 @@ export default function NotionTasksSummary({ pillars }: Props) {
   const [hotScope, setHotScope] = useState<HotScope>("urgent_high");
   const [productionNotDone, setProductionNotDone] = useState<boolean>(false);
   const [hydrated, setHydrated] = useState(false);
+  // Acute flags — Notion page IDs the product owner has marked as
+  // "right now" tasks. They float to the top of the Hot panel and are
+  // visually separated from the rest with a thin red rule.
+  const [acuteIds, setAcuteIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    fetch("/api/acute-flags")
+      .then(r => r.json())
+      .then(d => setAcuteIds(new Set<string>(d.ids ?? [])))
+      .catch(() => {});
+  }, []);
+
+  async function toggleAcute(pageId: string) {
+    const isFlagged = acuteIds.has(pageId);
+    // Optimistic update so the row jumps to the top immediately.
+    setAcuteIds(prev => {
+      const next = new Set(prev);
+      if (isFlagged) next.delete(pageId); else next.add(pageId);
+      return next;
+    });
+    try {
+      const res = isFlagged
+        ? await fetch(`/api/acute-flags?notion_page_id=${encodeURIComponent(pageId)}`, { method: "DELETE" })
+        : await fetch("/api/acute-flags", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ notion_page_id: pageId }),
+          });
+      if (!res.ok) throw new Error(await res.text());
+    } catch {
+      // Rollback on failure.
+      setAcuteIds(prev => {
+        const next = new Set(prev);
+        if (isFlagged) next.add(pageId); else next.delete(pageId);
+        return next;
+      });
+    }
+  }
 
   // Read prefs on mount (client-only)
   useEffect(() => {
@@ -251,8 +289,16 @@ export default function NotionTasksSummary({ pillars }: Props) {
   }, []);
 
   const hot = useMemo(
-    () => (tasks ?? []).filter(t => isHotTask(t, hotScope)).sort(sortByPriority),
-    [tasks, hotScope]
+    () => (tasks ?? [])
+      .filter(t => isHotTask(t, hotScope))
+      .sort((a, b) => {
+        // Acute-flagged tasks come first; within each bucket, sort by priority.
+        const aAcute = acuteIds.has(a.id) ? 0 : 1;
+        const bAcute = acuteIds.has(b.id) ? 0 : 1;
+        if (aAcute !== bAcute) return aAcute - bAcute;
+        return sortByPriority(a, b);
+      }),
+    [tasks, hotScope, acuteIds]
   );
   const production = useMemo(
     () => (tasks ?? [])
@@ -276,6 +322,8 @@ export default function NotionTasksSummary({ pillars }: Props) {
         sprintCount={sprintCount}
         onAssign={assignTask}
         onAssignSprint={assignSprint}
+        acuteIds={acuteIds}
+        onToggleAcute={toggleAcute}
         storageKey={HOT_OPEN_KEY}
         toolbar={
           <div className="flex items-center gap-1 bg-gray-100 rounded-md p-0.5"
@@ -325,7 +373,7 @@ export default function NotionTasksSummary({ pillars }: Props) {
   );
 }
 
-function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPageId, pillars, sprintByPageId, sprintCount, onAssign, onAssignSprint, toolbar, storageKey }: {
+function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPageId, pillars, sprintByPageId, sprintCount, onAssign, onAssignSprint, acuteIds, onToggleAcute, toolbar, storageKey }: {
   title: string;
   subtitle: string;
   icon: React.ReactNode;
@@ -338,6 +386,8 @@ function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPag
   sprintCount: number;
   onAssign: (notionPageId: string, pillarId: string | null) => Promise<void>;
   onAssignSprint: (notionPageId: string, sprintIdx: number) => Promise<void>;
+  acuteIds?: Set<string>;
+  onToggleAcute?: (notionPageId: string) => void | Promise<void>;
   toolbar?: React.ReactNode;
   storageKey?: string;
 }) {
@@ -383,19 +433,46 @@ function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPag
           {!error && !loading && tasks.length === 0 && (
             <p className="px-4 py-6 text-center text-xs text-gray-400">אין משימות תואמות</p>
           )}
-          {!error && tasks.map(task => {
+          {!error && tasks.map((task, i) => {
             const pillar = task.id ? pillarByPageId.get(task.id) : undefined;
             const openNotion = () => window.open(task.page_url, "_blank", "noopener,noreferrer");
+            const isAcute = !!acuteIds?.has(task.id);
+            // Render a thicker red rule between the last acute task and
+            // the first non-acute one, only when both groups exist.
+            const prev = tasks[i - 1];
+            const wasAcute = prev ? !!acuteIds?.has(prev.id) : false;
+            const showAcuteSeparator = i > 0 && wasAcute && !isAcute;
             return (
-              <div key={task.id}
+              <div key={task.id}>
+                {showAcuteSeparator && (
+                  <div className="border-t-2 border-red-200 mx-4" aria-hidden />
+                )}
+              <div
                 onDoubleClick={openNotion}
                 onContextMenu={e => { e.preventDefault(); openNotion(); }}
                 title={task.name}
-                className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-50 last:border-0 hover:bg-gray-50 cursor-default">
+                className={clsx(
+                  "flex items-center gap-2 px-4 py-2.5 border-b border-gray-50 last:border-0 hover:bg-gray-50 cursor-default",
+                  isAcute && "bg-red-50/40"
+                )}>
+                {onToggleAcute && (
+                  <button
+                    onClick={e => { e.stopPropagation(); void onToggleAcute(task.id); }}
+                    title={isAcute ? "Unmark as acute" : "Mark as acute (right-now task)"}
+                    className={clsx(
+                      "shrink-0 transition-colors",
+                      isAcute ? "text-red-600 hover:text-red-700" : "text-gray-300 hover:text-red-500"
+                    )}>
+                    <AlertOctagon size={13} />
+                  </button>
+                )}
                 {task.notion_id != null && (
                   <span className="text-[10px] font-mono text-gray-400 tabular-nums shrink-0 w-10">#{task.notion_id}</span>
                 )}
-                <span className="text-sm text-gray-700 flex-1 truncate">{task.name}</span>
+                <span className={clsx(
+                  "text-sm flex-1 truncate",
+                  isAcute ? "text-red-700 font-medium" : "text-gray-700"
+                )}>{task.name}</span>
                 <div className="flex items-center gap-1.5 shrink-0">
                   {task.priority && (
                     <span className={clsx("text-[10px] px-1.5 py-0.5 rounded border capitalize",
@@ -430,6 +507,7 @@ function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPag
                     <ExternalLink size={11} />
                   </a>
                 </div>
+              </div>
               </div>
             );
           })}
