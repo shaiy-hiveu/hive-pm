@@ -303,8 +303,15 @@ export default function NotionTasksSummary({ pillars }: Props) {
   const production = useMemo(
     () => (tasks ?? [])
       .filter(t => isProductionTask(t) && (!productionNotDone || !isDoneStatus(t.status)))
-      .sort(sortByPriority),
-    [tasks, productionNotDone]
+      .sort((a, b) => {
+        // Acute-flagged production tasks float to the top, same logic as
+        // the Hot panel.
+        const aAcute = acuteIds.has(a.id) ? 0 : 1;
+        const bAcute = acuteIds.has(b.id) ? 0 : 1;
+        if (aAcute !== bAcute) return aAcute - bAcute;
+        return sortByPriority(a, b);
+      }),
+    [tasks, productionNotDone, acuteIds]
   );
 
   return (
@@ -355,6 +362,8 @@ export default function NotionTasksSummary({ pillars }: Props) {
         sprintCount={sprintCount}
         onAssign={assignTask}
         onAssignSprint={assignSprint}
+        acuteIds={acuteIds}
+        onToggleAcute={toggleAcute}
         storageKey={PRODUCTION_OPEN_KEY}
         toolbar={
           <label
