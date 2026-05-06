@@ -259,6 +259,48 @@ export default function NotionTasksSummary({ pillars }: Props) {
     }
   }
 
+  // Replace the Notion `Assigned to` people for a task with exactly the
+  // supplied user list. Empty array clears the assignee. Optimistically
+  // updates the local task state so the chip flips immediately; rolls
+  // back on Notion API failure.
+  async function assignAssignees(
+    notionPageId: string,
+    users: Array<{ id: string; name: string | null }>
+  ): Promise<void> {
+    if (!tasks) return;
+    const before = tasks;
+    const names = users.map(u => u.name).filter((n): n is string => !!n);
+    const after = tasks.map(t =>
+      t.id === notionPageId
+        ? { ...t, assignee: names[0] ?? null, assignees: names }
+        : t
+    );
+    setTasks(after);
+    try {
+      const res = await fetch(
+        `/api/notion/tasks/${encodeURIComponent(notionPageId)}/assignees`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_ids: users.map(u => u.id) }),
+        }
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error ?? `HTTP ${res.status}`);
+      }
+      try {
+        // Keep the cached tasks list in sync so a remount doesn't snap
+        // the chip back to its old value before the next Refresh Data.
+        localStorage.setItem("notion:tasks-cache", JSON.stringify({ tasks: after }));
+      } catch { /* noop */ }
+    } catch (err) {
+      console.error("Notion assignee update failed:", err);
+      setTasks(before);
+      alert(`Couldn't update Notion assignee: ${err instanceof Error ? err.message : "unknown error"}`);
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
     // Don't refetch on every page mount; reuse the cached payload from
@@ -331,6 +373,7 @@ export default function NotionTasksSummary({ pillars }: Props) {
         sprintCount={sprintCount}
         onAssign={assignTask}
         onAssignSprint={assignSprint}
+        onChangeAssignees={assignAssignees}
         acuteIds={acuteIds}
         onToggleAcute={toggleAcute}
         storageKey={HOT_OPEN_KEY}
@@ -364,6 +407,7 @@ export default function NotionTasksSummary({ pillars }: Props) {
         sprintCount={sprintCount}
         onAssign={assignTask}
         onAssignSprint={assignSprint}
+        onChangeAssignees={assignAssignees}
         acuteIds={acuteIds}
         onToggleAcute={toggleAcute}
         storageKey={PRODUCTION_OPEN_KEY}
@@ -384,7 +428,7 @@ export default function NotionTasksSummary({ pillars }: Props) {
   );
 }
 
-function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPageId, pillars, sprintByPageId, sprintCount, onAssign, onAssignSprint, acuteIds, onToggleAcute, toolbar, storageKey }: {
+function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPageId, pillars, sprintByPageId, sprintCount, onAssign, onAssignSprint, onChangeAssignees, acuteIds, onToggleAcute, toolbar, storageKey }: {
   title: string;
   subtitle: string;
   icon: React.ReactNode;
@@ -397,6 +441,7 @@ function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPag
   sprintCount: number;
   onAssign: (notionPageId: string, pillarId: string | null) => Promise<void>;
   onAssignSprint: (notionPageId: string, sprintIdx: number) => Promise<void>;
+  onChangeAssignees?: (notionPageId: string, users: Array<{ id: string; name: string | null }>) => Promise<void>;
   acuteIds?: Set<string>;
   onToggleAcute?: (notionPageId: string) => void | Promise<void>;
   toolbar?: React.ReactNode;
@@ -596,7 +641,12 @@ function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPag
                   isAcute ? "text-red-700 font-medium" : "text-gray-700"
                 )}>{task.name}</span>
                 <div className="flex items-center gap-1.5 shrink-0">
-                  {(() => {
+                  {onChangeAssignees ? (
+                    <AssigneeMenu
+                      task={task}
+                      onChange={users => onChangeAssignees(task.id, users)}
+                    />
+                  ) : (() => {
                     const names = task.assignees && task.assignees.length > 0
                       ? task.assignees
                       : task.assignee ? [task.assignee] : [];
@@ -839,6 +889,187 @@ function SprintMenu({ current, count, onPick }: {
         title={current ? `Sprint ${current} — לחיצה כדי לשנות` : "שייך משימה לספרינט"}>
         {current ? `S${current}` : "Sprint?"}
         {busy ? <Loader2 size={10} className="animate-spin" /> : <ChevronDown size={10} className="opacity-60" />}
+      </button>
+      {typeof window !== "undefined" && menu && createPortal(menu, document.body)}
+    </>
+  );
+}
+
+// Notion workspace users — shared across every AssigneeMenu so the API
+// hit happens at most once per page load. Cleared with a Refresh Data
+// click since the underlying endpoint also caches for 5 minutes.
+type NotionPerson = { id: string; name: string | null; email: string | null; avatar_url: string | null };
+let notionUsersCache: NotionPerson[] | null = null;
+let notionUsersInflight: Promise<NotionPerson[]> | null = null;
+
+async function loadNotionUsers(): Promise<NotionPerson[]> {
+  if (notionUsersCache) return notionUsersCache;
+  if (notionUsersInflight) return notionUsersInflight;
+  notionUsersInflight = fetch("/api/notion/users")
+    .then(r => r.json())
+    .then(d => {
+      const users: NotionPerson[] = Array.isArray(d?.users) ? d.users : [];
+      notionUsersCache = users;
+      return users;
+    })
+    .catch(() => [] as NotionPerson[])
+    .finally(() => { notionUsersInflight = null; });
+  return notionUsersInflight;
+}
+
+function AssigneeMenu({ task, onChange }: {
+  task: NotionTask;
+  onChange: (users: Array<{ id: string; name: string | null }>) => Promise<void>;
+}) {
+  const currentNames = task.assignees && task.assignees.length > 0
+    ? task.assignees
+    : task.assignee ? [task.assignee] : [];
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [users, setUsers] = useState<NotionPerson[] | null>(notionUsersCache);
+  const [query, setQuery] = useState("");
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const MENU_W = 240;
+  const MENU_H = 320;
+
+  function computePos() {
+    const r = triggerRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const spaceBelow = window.innerHeight - r.bottom;
+    const goUp = spaceBelow < MENU_H + 12;
+    const top = goUp ? Math.max(8, r.top - MENU_H - 4) : r.bottom + 4;
+    const right = Math.max(8, window.innerWidth - r.right);
+    setPos({ top, right });
+  }
+
+  function toggle() {
+    if (!open) {
+      computePos();
+      if (!users) void loadNotionUsers().then(setUsers);
+    }
+    setOpen(o => !o);
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    function handler(e: MouseEvent) {
+      const t = e.target as Node;
+      if (menuRef.current?.contains(t)) return;
+      if (triggerRef.current?.contains(t)) return;
+      setOpen(false);
+    }
+    function onScrollOrResize() { computePos(); }
+    document.addEventListener("mousedown", handler);
+    window.addEventListener("scroll", onScrollOrResize, true);
+    window.addEventListener("resize", onScrollOrResize);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      window.removeEventListener("scroll", onScrollOrResize, true);
+      window.removeEventListener("resize", onScrollOrResize);
+    };
+  }, [open]);
+
+  async function pick(user: NotionPerson | null) {
+    setBusy(true);
+    try {
+      await onChange(user ? [{ id: user.id, name: user.name }] : []);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+      setQuery("");
+    }
+  }
+
+  // Filter users by the typed query against name + email. Resolve by
+  // current names so we can show a check on the active assignee.
+  const filtered = useMemo(() => {
+    if (!users) return [] as NotionPerson[];
+    const q = query.trim().toLowerCase();
+    if (!q) return users;
+    return users.filter(u =>
+      (u.name ?? "").toLowerCase().includes(q) ||
+      (u.email ?? "").toLowerCase().includes(q)
+    );
+  }, [users, query]);
+
+  const currentNameLower = currentNames[0]?.toLowerCase() ?? null;
+  const triggerLabel = currentNames[0] ?? "Unassigned";
+  const extra = currentNames.length - 1;
+
+  const menu = open && pos && (
+    <div
+      ref={menuRef}
+      style={{ position: "fixed", top: pos.top, right: pos.right, width: MENU_W, maxHeight: MENU_H, zIndex: 60 }}
+      className="bg-white border border-gray-200 rounded-lg shadow-lg flex flex-col overflow-hidden"
+      onClick={e => e.stopPropagation()}
+    >
+      <div className="px-2 py-1.5 border-b border-gray-100">
+        <input
+          autoFocus
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder="Search Notion users…"
+          className="w-full text-xs px-2 py-1 border border-gray-200 rounded focus:outline-none focus:border-indigo-400"
+        />
+      </div>
+      <div className="overflow-y-auto flex-1">
+        {users === null ? (
+          <div className="px-3 py-3 text-xs text-gray-400 inline-flex items-center gap-1.5">
+            <Loader2 size={11} className="animate-spin" /> loading…
+          </div>
+        ) : filtered.length === 0 ? (
+          <p className="px-3 py-3 text-xs text-gray-400 italic">No users match.</p>
+        ) : (
+          filtered.map(u => {
+            const isCurrent = !!currentNameLower && (u.name ?? "").toLowerCase() === currentNameLower;
+            return (
+              <button key={u.id} onClick={() => pick(u)}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 text-right">
+                {u.avatar_url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={u.avatar_url} alt="" className="w-5 h-5 rounded-full shrink-0" />
+                ) : (
+                  <span className="w-5 h-5 rounded-full bg-gray-200 inline-flex items-center justify-center text-[9px] text-gray-500 shrink-0">
+                    {(u.name ?? "?").slice(0, 1).toUpperCase()}
+                  </span>
+                )}
+                <span className="flex-1 min-w-0 truncate text-right">{u.name ?? "(no name)"}</span>
+                {isCurrent && <Check size={12} className="text-indigo-500 shrink-0" />}
+              </button>
+            );
+          })
+        )}
+      </div>
+      <div className="border-t border-gray-100">
+        <button onClick={() => pick(null)}
+          disabled={currentNames.length === 0}
+          className="w-full px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50 text-right disabled:opacity-50">
+          ביטול שיוך
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <>
+      <button ref={triggerRef}
+        onClick={e => { e.stopPropagation(); toggle(); }}
+        onDoubleClick={e => e.stopPropagation()}
+        onContextMenu={e => e.stopPropagation()}
+        title={currentNames.length > 0 ? currentNames.join(", ") + " — click to reassign in Notion" : "Assign in Notion"}
+        className={clsx(
+          "inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border transition-colors max-w-[160px]",
+          currentNames.length > 0
+            ? "bg-indigo-50 text-indigo-700 border-indigo-200 hover:border-indigo-400"
+            : "border-dashed border-gray-300 text-gray-400 hover:text-gray-600 hover:border-gray-400"
+        )}>
+        <span className="truncate">
+          {triggerLabel}{extra > 0 ? ` +${extra}` : ""}
+        </span>
+        {busy ? <Loader2 size={10} className="animate-spin shrink-0" /> : <ChevronDown size={10} className="opacity-60 shrink-0" />}
       </button>
       {typeof window !== "undefined" && menu && createPortal(menu, document.body)}
     </>
