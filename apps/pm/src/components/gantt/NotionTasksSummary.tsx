@@ -404,6 +404,13 @@ function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPag
 }) {
   const [open, setOpen] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  // Click-to-filter state for the type breakdown chips. Clicking a chip
+  // narrows the visible task list to that type only; clicking it again
+  // (or another) toggles the filter. Counts on the chips always reflect
+  // the FULL panel tasks, not the filtered subset, so the user can see
+  // how many of each type exist before drilling in.
+  type TypeFilter = "bug" | "feature" | "production" | "other" | null;
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>(null);
 
   useEffect(() => {
     if (storageKey) setOpen(readBoolFromStorage(storageKey, false));
@@ -431,6 +438,26 @@ function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPag
     return { bugs, features, production, other };
   }, [tasks]);
 
+  const visibleTasks = useMemo(() => {
+    if (!typeFilter) return tasks;
+    return tasks.filter(t => {
+      const tp = (t.type ?? "").toLowerCase();
+      if (typeFilter === "other") {
+        return tp !== "bug" && tp !== "feature" && tp !== "production";
+      }
+      return tp === typeFilter;
+    });
+  }, [tasks, typeFilter]);
+
+  function toggleFilter(next: Exclude<TypeFilter, null>, e?: React.MouseEvent) {
+    // Stop the chip click from also toggling the panel open/close on the
+    // outer header button.
+    e?.stopPropagation();
+    e?.preventDefault();
+    setTypeFilter(prev => (prev === next ? null : next));
+    if (!open) setOpen(true);
+  }
+
   return (
     <div className="bg-white border border-gray-200 rounded-2xl shadow-sm">
       <div className="flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors">
@@ -447,24 +474,60 @@ function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPag
               {!loading && tasks.length > 0 && (
                 <span className="flex items-center gap-1">
                   {typeBreakdown.bugs > 0 && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-50 text-red-700 border border-red-200 tabular-nums">
+                    <button
+                      type="button"
+                      onClick={e => toggleFilter("bug", e)}
+                      title={typeFilter === "bug" ? "Clear filter" : "Show only bugs"}
+                      className={clsx(
+                        "text-[10px] px-1.5 py-0.5 rounded border tabular-nums transition-colors",
+                        typeFilter === "bug"
+                          ? "bg-red-600 text-white border-red-700"
+                          : "bg-red-50 text-red-700 border-red-200 hover:bg-red-100"
+                      )}>
                       {typeBreakdown.bugs} bug{typeBreakdown.bugs > 1 ? "s" : ""}
-                    </span>
+                    </button>
                   )}
                   {typeBreakdown.features > 0 && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 tabular-nums">
+                    <button
+                      type="button"
+                      onClick={e => toggleFilter("feature", e)}
+                      title={typeFilter === "feature" ? "Clear filter" : "Show only features"}
+                      className={clsx(
+                        "text-[10px] px-1.5 py-0.5 rounded border tabular-nums transition-colors",
+                        typeFilter === "feature"
+                          ? "bg-indigo-600 text-white border-indigo-700"
+                          : "bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100"
+                      )}>
                       {typeBreakdown.features} feature{typeBreakdown.features > 1 ? "s" : ""}
-                    </span>
+                    </button>
                   )}
                   {typeBreakdown.production > 0 && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 tabular-nums">
+                    <button
+                      type="button"
+                      onClick={e => toggleFilter("production", e)}
+                      title={typeFilter === "production" ? "Clear filter" : "Show only production"}
+                      className={clsx(
+                        "text-[10px] px-1.5 py-0.5 rounded border tabular-nums transition-colors",
+                        typeFilter === "production"
+                          ? "bg-amber-600 text-white border-amber-700"
+                          : "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100"
+                      )}>
                       {typeBreakdown.production} production
-                    </span>
+                    </button>
                   )}
                   {typeBreakdown.other > 0 && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 border border-gray-200 tabular-nums">
+                    <button
+                      type="button"
+                      onClick={e => toggleFilter("other", e)}
+                      title={typeFilter === "other" ? "Clear filter" : "Show only other / no-type"}
+                      className={clsx(
+                        "text-[10px] px-1.5 py-0.5 rounded border tabular-nums transition-colors",
+                        typeFilter === "other"
+                          ? "bg-gray-700 text-white border-gray-800"
+                          : "bg-gray-100 text-gray-600 border-gray-200 hover:bg-gray-200"
+                      )}>
                       {typeBreakdown.other} other
-                    </span>
+                    </button>
                   )}
                 </span>
               )}
@@ -484,13 +547,21 @@ function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPag
           {!error && !loading && tasks.length === 0 && (
             <p className="px-4 py-6 text-center text-xs text-gray-400">אין משימות תואמות</p>
           )}
-          {!error && tasks.map((task, i) => {
+          {!error && !loading && tasks.length > 0 && visibleTasks.length === 0 && (
+            <p className="px-4 py-6 text-center text-xs text-gray-400">
+              אין משימות מסוג {typeFilter} ברשימה.
+              <button onClick={() => setTypeFilter(null)} className="ml-2 underline text-indigo-600 hover:text-indigo-800">
+                Clear filter
+              </button>
+            </p>
+          )}
+          {!error && visibleTasks.map((task, i) => {
             const pillar = task.id ? pillarByPageId.get(task.id) : undefined;
             const openNotion = () => window.open(task.page_url, "_blank", "noopener,noreferrer");
             const isAcute = !!acuteIds?.has(task.id);
             // Render a thicker red rule between the last acute task and
             // the first non-acute one, only when both groups exist.
-            const prev = tasks[i - 1];
+            const prev = visibleTasks[i - 1];
             const wasAcute = prev ? !!acuteIds?.has(prev.id) : false;
             const showAcuteSeparator = i > 0 && wasAcute && !isAcute;
             return (
