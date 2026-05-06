@@ -43,9 +43,15 @@ export async function syncNotionStatus(): Promise<SyncResult> {
 
   const notionTasks = await fetchNotionTasks();
 
-  // Record sampling — a snapshot of every Notion task currently Done /
+  // Record sampling — snapshot of every Notion task currently Done /
   // Complete / Approved. Used by the gantt page's "Newly done" digest.
-  // Failures here are non-fatal: the sync still proceeds.
+  //
+  // We dedupe consecutive identical samplings: if the set of done page-ids
+  // hasn't changed since the most recent sampling, we just bump that row's
+  // sampled_at to "now" instead of inserting a fresh row. Empty rows
+  // (refresh-but-nothing-changed) clutter the digest list with "No tasks
+  // flipped to Done in this interval" entries that carry no information.
+  // Failures here are non-fatal — the sync still proceeds.
   try {
     const doneSnapshot: DoneSnapshot[] = notionTasks
       .filter(t => isDoneNotionStatus(t.status))
@@ -57,10 +63,34 @@ export async function syncNotionStatus(): Promise<SyncResult> {
         status: t.status ?? null,
         product: t.product ?? null,
       }));
-    const { error: sampleErr } = await db
+
+    const { data: latest } = await db
       .from("notion_samplings")
-      .insert({ done_tasks: doneSnapshot });
-    if (sampleErr) console.warn("notion_samplings insert error:", sampleErr.message);
+      .select("id, done_tasks")
+      .order("sampled_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const newIds = new Set(doneSnapshot.map(t => t.notion_page_id));
+    const prevDone: DoneSnapshot[] = (latest?.done_tasks ?? []) as DoneSnapshot[];
+    const prevIds = new Set(prevDone.map(t => t.notion_page_id));
+    const idsEqual =
+      latest != null &&
+      newIds.size === prevIds.size &&
+      [...newIds].every(id => prevIds.has(id));
+
+    if (idsEqual) {
+      const { error: bumpErr } = await db
+        .from("notion_samplings")
+        .update({ sampled_at: new Date().toISOString(), done_tasks: doneSnapshot })
+        .eq("id", latest!.id);
+      if (bumpErr) console.warn("notion_samplings bump error:", bumpErr.message);
+    } else {
+      const { error: sampleErr } = await db
+        .from("notion_samplings")
+        .insert({ done_tasks: doneSnapshot });
+      if (sampleErr) console.warn("notion_samplings insert error:", sampleErr.message);
+    }
   } catch (e: unknown) {
     console.warn("notion_samplings insert exception:", e instanceof Error ? e.message : e);
   }
