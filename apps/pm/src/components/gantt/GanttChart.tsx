@@ -57,6 +57,14 @@ const SORT_KEY = "gantt:sortBy";
 type SortBy = "id" | "completion";
 
 type SprintGoal = { text: string; completion: number };
+
+type SprintStats = {
+  total: number;
+  done: number;            // includes 'done' and 'approved'
+  in_progress: number;
+  todo: number;
+  blocked: number;
+};
 const LABEL_WIDTH_DEFAULT = 360;
 const LABEL_WIDTH_MIN = 220;
 const LABEL_WIDTH_MAX = 720;
@@ -238,6 +246,20 @@ export default function GanttChart({ pillars, orphanTasks = [] }: Props) {
     const lines: string[] = [name];
     const c = sprintComment(idx);
     if (c) lines.push(c);
+    // Stats line — total tasks, done count, % done. Always shown even if
+    // 0 tasks, so an empty sprint reads as "0/0 done · 0%" instead of
+    // looking like the tooltip is missing data.
+    const stats = sprintStats.get(idx);
+    if (stats) {
+      const pct = stats.total === 0 ? 0 : Math.round((stats.done / stats.total) * 100);
+      lines.push("");
+      lines.push(`📊 ${stats.done}/${stats.total} done · ${pct}%`);
+      const detail: string[] = [];
+      if (stats.in_progress > 0) detail.push(`${stats.in_progress} in progress`);
+      if (stats.todo > 0) detail.push(`${stats.todo} to-do`);
+      if (stats.blocked > 0) detail.push(`${stats.blocked} blocked`);
+      if (detail.length > 0) lines.push(`   ${detail.join(" · ")}`);
+    }
     const goals = sprintGoalsList(idx);
     if (goals.length > 0) {
       lines.push("");
@@ -648,6 +670,29 @@ export default function GanttChart({ pillars, orphanTasks = [] }: Props) {
         }
       }
       map.set(s.index, weightTotal === 0 ? 0 : weightedSum / weightTotal);
+    }
+    return map;
+  }, [allSprints, displayPillars, now]);
+
+  // Per-sprint head-count stats — total tasks, how many are done/approved,
+  // how many in progress, etc. Used by the sprint chip tooltip and the
+  // SprintMetaEditor so the user sees concrete numbers, not just a %.
+  const sprintStats = useMemo(() => {
+    const map = new Map<number, SprintStats>();
+    for (const s of allSprints) {
+      const stats: SprintStats = { total: 0, done: 0, in_progress: 0, todo: 0, blocked: 0 };
+      for (const p of displayPillars) {
+        for (const t of p.tasks ?? []) {
+          if (sprintForTask(t, allSprints, now)?.index !== s.index) continue;
+          stats.total += 1;
+          const state = taskState(t);
+          if (state === "done" || state === "approved") stats.done += 1;
+          else if (state === "in_progress") stats.in_progress += 1;
+          else if (state === "blocked") stats.blocked += 1;
+          else stats.todo += 1;
+        }
+      }
+      map.set(s.index, stats);
     }
     return map;
   }, [allSprints, displayPillars, now]);
@@ -1078,6 +1123,7 @@ export default function GanttChart({ pillars, orphanTasks = [] }: Props) {
           initialComment={editingMeta.comment}
           initialGoals={editingMeta.goals}
           defaultName={defaultSprintName(editingMeta.idx)}
+          stats={sprintStats.get(editingMeta.idx) ?? null}
           onClose={() => setEditingMeta(null)}
           onSave={async (name, comment, goals) => {
             await saveSprintMeta(editingMeta.idx, name, comment, goals);
@@ -1378,12 +1424,13 @@ function ProgressPicker({ current, hasOverride, onPick }: {
 
 const GOAL_PCT_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] as const;
 
-function SprintMetaEditor({ idx, initialName, initialComment, initialGoals, defaultName, onClose, onSave }: {
+function SprintMetaEditor({ idx, initialName, initialComment, initialGoals, defaultName, stats, onClose, onSave }: {
   idx: number;
   initialName: string;
   initialComment: string;
   initialGoals: SprintGoal[];
   defaultName: string;
+  stats: SprintStats | null;
   onClose: () => void;
   onSave: (name: string, comment: string, goals: SprintGoal[]) => Promise<void>;
 }) {
@@ -1424,7 +1471,42 @@ function SprintMetaEditor({ idx, initialName, initialComment, initialGoals, defa
           <h3 className="text-lg font-semibold text-gray-900">Edit Sprint {idx}</h3>
           <span className="text-[10px] text-gray-400 uppercase tracking-wider">Sprint metadata</span>
         </div>
-        <p className="text-xs text-gray-500 mb-5">The sprint date range stays visible under the name.</p>
+        <p className="text-xs text-gray-500 mb-3">The sprint date range stays visible under the name.</p>
+
+        {/* Live stats — read-only summary of the sprint at the moment the
+            editor was opened. Doesn't update while the modal is open. */}
+        {stats && (
+          <div className="mb-5 flex items-center gap-3 rounded-lg bg-gray-50 border border-gray-200 px-3 py-2 text-xs">
+            <div className="flex-1 grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-gray-400">Total</div>
+                <div className="text-sm font-semibold text-gray-900 tabular-nums">{stats.total}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-emerald-600">Done</div>
+                <div className="text-sm font-semibold text-emerald-700 tabular-nums">{stats.done}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-indigo-600">In progress</div>
+                <div className="text-sm font-semibold text-indigo-700 tabular-nums">{stats.in_progress}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-gray-500">To-do</div>
+                <div className="text-sm font-semibold text-gray-700 tabular-nums">{stats.todo}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-red-500">Blocked</div>
+                <div className="text-sm font-semibold text-red-600 tabular-nums">{stats.blocked}</div>
+              </div>
+            </div>
+            <div className="border-l border-gray-200 pl-3 text-center min-w-[64px]">
+              <div className="text-[10px] uppercase tracking-wider text-gray-400">% done</div>
+              <div className="text-sm font-semibold text-gray-900 tabular-nums">
+                {stats.total === 0 ? 0 : Math.round((stats.done / stats.total) * 100)}%
+              </div>
+            </div>
+          </div>
+        )}
 
         <label className="block text-xs font-medium text-gray-600 mb-1">Name</label>
         <input
