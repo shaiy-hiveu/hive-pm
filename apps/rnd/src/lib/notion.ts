@@ -23,7 +23,30 @@ function extractNumber(prop: any): number | null {
   if (!prop) return null;
   if (prop.type === "unique_id") return prop.unique_id?.number ?? null;
   if (prop.type === "formula" && prop.formula?.type === "number") return prop.formula.number ?? null;
+  if (prop.type === "rollup" && prop.rollup?.type === "number") return prop.rollup.number ?? null;
+  if (prop.type === "title" || prop.type === "rich_text") {
+    const text = (prop[prop.type] ?? []).map((t: { plain_text?: string }) => t.plain_text ?? "").join("");
+    const match = text.match(/\d+/);
+    if (match) return Number(match[0]);
+  }
   return prop.number ?? null;
+}
+
+// Resolve the Notion auto-id even when the property has been renamed.
+function resolveNotionId(props: Record<string, any>): number | null {
+  const candidates = ["ID", "Id", "id", "Task ID", "TaskID", "#", "Number", "No"];
+  for (const key of candidates) {
+    const v = extractNumber(props[key]);
+    if (v != null) return v;
+  }
+  for (const v of Object.values(props ?? {})) {
+    const p = v as { type?: string };
+    if (p?.type === "unique_id") {
+      const n = extractNumber(p);
+      if (n != null) return n;
+    }
+  }
+  return null;
 }
 
 function extractDate(prop: any): string | null {
@@ -92,7 +115,7 @@ export function mapPageToTask(page: any): NotionTask {
   return {
     id: page.id,
     page_url: page.url,
-    notion_id: extractNumber(props["ID"]),
+    notion_id: resolveNotionId(props),
     name: extractText(props["Name"]),
     status: extractSelect(props["Status"]),
     priority: extractSelect(props["Priority"]),
