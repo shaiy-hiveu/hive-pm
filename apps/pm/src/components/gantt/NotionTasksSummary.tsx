@@ -16,6 +16,8 @@ type NotionTask = {
   product: string | null;
   type: string | null;
   sprint: string | null;
+  assignee: string | null;
+  assignees?: string[];
 };
 
 type DbTask = {
@@ -483,6 +485,21 @@ function DigestPanel({ title, subtitle, icon, tasks, loading, error, pillarByPag
                   isAcute ? "text-red-700 font-medium" : "text-gray-700"
                 )}>{task.name}</span>
                 <div className="flex items-center gap-1.5 shrink-0">
+                  {(() => {
+                    const names = task.assignees && task.assignees.length > 0
+                      ? task.assignees
+                      : task.assignee ? [task.assignee] : [];
+                    if (names.length === 0) return null;
+                    const first = names[0];
+                    const extra = names.length - 1;
+                    return (
+                      <span
+                        title={names.join(", ")}
+                        className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 max-w-[140px] truncate">
+                        {first}{extra > 0 ? ` +${extra}` : ""}
+                      </span>
+                    );
+                  })()}
                   {task.priority && (
                     <span className={clsx("text-[10px] px-1.5 py-0.5 rounded border capitalize",
                       PRIORITY_STYLE[task.priority.toLowerCase()] ?? "bg-gray-100 text-gray-600 border-gray-200")}>
